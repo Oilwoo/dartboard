@@ -1,0 +1,29 @@
+[project]
+name = "dartboard"
+version = "0.1.0"
+description = "DART 공시를 읽고, 모든 판단에 성적표를 남기는 검증형 투자 리서치 에이전트"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph==1.2.19",
+  "pydantic-ai-slim[openai]==2.64.0",
+  "discord.py==2.7.1",
+  "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dartboard = ["*.yaml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

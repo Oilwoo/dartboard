@@ -1,0 +1,10 @@
+# What may run without asking you. Anything not listed here needs a Discord approval.
+dry_run: true              # keep true for the first 1-2 weeks: log what WOULD happen, execute nothing
+
+approval_timeout_sec: 60   # no answer within 60 s on Discord = rejected
+
+auto_approve:
+  "upbit:order":           # example target: an exchange order through its official API
+    max_amount_per_order: 50000   # KRW
+    max_daily_spend: 200000       # KRW, rolling 24 h
+    max_orders_per_hour: 3
