@@ -1,0 +1,43 @@
+from pathlib import Path
+
+import pytest
+
+from dartboard.config import load, load_dotenv, load_watchlist
+
+ROOT = Path(__file__).resolve().parent.parent
+ENV = {"DART_API_KEY": "d", "DISCORD_BOT_TOKEN": "t", "DISCORD_CHANNEL_ID": "123", "DISCORD_APPROVER_USER_ID": "456"}
+
+
+def test_dotenv_fills_missing_values_only(tmp_path):
+    f = tmp_path / ".env"
+    f.write_text('# comment\nDART_API_KEY="abc"\nPOLL_MINUTES=5\nEMPTY=\n\nNOT A SETTING\n', encoding="utf-8")
+    env = {"POLL_MINUTES": "15"}
+    load_dotenv(str(f), env)
+    assert env == {"DART_API_KEY": "abc", "POLL_MINUTES": "15", "EMPTY": ""}
+
+
+def test_watchlist_codes_stay_exactly_as_written(tmp_path):
+    f = tmp_path / "w.yaml"
+    f.write_text('stocks:\n  000660: SK하이닉스\n  "005930": 삼성전자\n  0126Z0: 신형코드\n', encoding="utf-8")
+    assert load_watchlist(str(f)) == {"000660": "SK하이닉스", "005930": "삼성전자", "0126Z0": "신형코드"}
+
+
+def test_short_code_is_rejected(tmp_path):
+    f = tmp_path / "w.yaml"
+    f.write_text("stocks:\n  5930: 삼성전자\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="5930"):
+        load_watchlist(str(f))
+
+
+def test_example_watchlist_loads():
+    assert load_watchlist(str(ROOT / "watchlist.yaml"))["005930"] == "삼성전자"
+
+
+def test_settings_from_environment():
+    cfg = load(dict(ENV, KIS_APP_KEY="k", POLL_MINUTES="5"), watchlist_path=str(ROOT / "watchlist.yaml"))
+    assert (cfg.channel_id, cfg.approver_id, cfg.poll_minutes, cfg.kis_key, cfg.kis_env) == (123, 456, 5, "k", "real")
+
+
+def test_missing_settings_are_named():
+    with pytest.raises(SystemExit, match="DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID"):
+        load({"DART_API_KEY": "d", "DISCORD_APPROVER_USER_ID": "1"}, watchlist_path=str(ROOT / "watchlist.yaml"))

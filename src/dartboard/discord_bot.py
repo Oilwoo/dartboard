@@ -58,7 +58,8 @@ class ApprovalView(discord.ui.View):
             self.result.set_result(False)
 
 
-async def ask_approval(channel: discord.abc.Messageable, approver_id: int, text: str, timeout_s: float) -> bool:
+async def ask_approval(channel: discord.abc.Messageable, approver_id: int, text: str, timeout_s: float,
+                       embed: discord.Embed | None = None) -> bool:
     view = ApprovalView(approver_id, timeout_s)
-    await channel.send(text, view=view)
+    await channel.send(text, embed=embed, view=view)
     return await view.result

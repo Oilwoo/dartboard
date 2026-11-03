@@ -1,0 +1,21 @@
+# dartboard bot on the always-on server (OCI).
+#   cp .env.example .env   # fill in the keys
+#   docker compose up -d --build
+#   docker compose logs -f
+services:
+  bot:
+    build: .
+    image: dartboard:local
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - dartboard-data:/app/data                 # ledger, checkpoints, KIS token: back this up
+      - ./watchlist.yaml:/app/watchlist.yaml:ro  # edit, then: docker compose restart bot
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  dartboard-data:

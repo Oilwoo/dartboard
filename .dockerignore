@@ -1,0 +1,10 @@
+.env
+*.env
+data/
+.git/
+.venv/
+**/__pycache__/
+.pytest_cache/
+hf-cache/
+deploy/
+tests/

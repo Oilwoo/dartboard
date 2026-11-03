@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS forecasts (
   id INTEGER PRIMARY KEY,
   created_at TEXT NOT NULL,
   ticker TEXT NOT NULL,
+  market TEXT NOT NULL,
   stance TEXT NOT NULL CHECK (stance IN ('buy','sell','hold')),
   confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
   horizon_days INTEGER NOT NULL CHECK (horizon_days > 0),
@@ -44,7 +45,7 @@ CREATE TRIGGER IF NOT EXISTS outcomes_no_delete BEFORE DELETE ON outcomes
   BEGIN SELECT RAISE(ABORT, 'outcomes are append-only'); END;
 """
 
-FIELDS = ("created_at", "ticker", "stance", "confidence", "horizon_days", "rationale", "sources", "model")
+FIELDS = ("created_at", "ticker", "market", "stance", "confidence", "horizon_days", "rationale", "sources", "model")
 
 
 def _hash(prev_hash: str, record: dict) -> str:
@@ -71,13 +72,15 @@ class Ledger:
         self.clock = clock or (lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
     def append(self, ticker: str, stance: str, confidence: float, horizon_days: int,
-               rationale: str, sources: list[str], model: str) -> int:
+               rationale: str, sources: list[str], model: str, market: str = "Y") -> int:
+        """market: OpenDART corp_cls ('Y' KOSPI, 'K' KOSDAQ, ...) - picks the benchmark index when scoring."""
         if stance not in STANCES:
             raise ValueError(f"stance must be one of {STANCES}")
         with self.lock:  # read-prev-hash and insert must not interleave
             row = self.db.execute("SELECT hash FROM forecasts ORDER BY id DESC LIMIT 1").fetchone()
             prev = row[0] if row else "genesis"
-            rec = {"created_at": self.clock(), "ticker": ticker, "stance": stance, "confidence": float(confidence),
+            rec = {"created_at": self.clock(), "ticker": ticker, "market": market, "stance": stance,
+                   "confidence": float(confidence),
                    "horizon_days": int(horizon_days), "rationale": rationale,
                    "sources": json.dumps(sources, ensure_ascii=False), "model": model}
             cur = self.db.execute(
@@ -98,10 +101,11 @@ class Ledger:
             prev = row[-1]
         return None
 
-    def due(self, today_iso: str) -> list[tuple[int, str, str]]:
-        """Forecasts whose horizon has passed and that are not scored yet: (id, ticker, created_at)."""
+    def due(self, today_iso: str) -> list[tuple[int, str, str, str, int]]:
+        """Unscored forecasts whose horizon has passed: (id, ticker, market, created_at, horizon_days)."""
         return self.db.execute(
-            """SELECT f.id, f.ticker, f.created_at FROM forecasts f LEFT JOIN outcomes o ON o.forecast_id = f.id
+            """SELECT f.id, f.ticker, f.market, f.created_at, f.horizon_days
+               FROM forecasts f LEFT JOIN outcomes o ON o.forecast_id = f.id
                WHERE o.forecast_id IS NULL AND date(f.created_at, '+' || f.horizon_days || ' days') <= date(?)""",
             (today_iso,),
         ).fetchall()

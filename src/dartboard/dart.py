@@ -6,9 +6,13 @@ Rules taken from the official developer guide (opendart.fss.or.kr, DS001):
 """
 from __future__ import annotations
 
+import html
+import io
 import json
+import re
 import urllib.parse
 import urllib.request
+import zipfile
 from dataclasses import dataclass
 from datetime import date
 from typing import Callable
@@ -32,6 +36,7 @@ class Disclosure:
     corp_name: str
     stock_code: str
     report_nm: str
+    corp_cls: str = ""  # 'Y' KOSPI, 'K' KOSDAQ, 'N' KONEX, 'E' other
 
 
 def _months_between(a: date, b: date) -> float:
@@ -62,7 +67,58 @@ def list_disclosures(api_key: str, bgn: date, end: date, corp_code: str | None =
             raise DartError(f"{status}: {data.get('message')}")
         for r in data.get("list", []):
             out.append(Disclosure(r["rcept_no"], r["rcept_dt"], r["corp_code"], r["corp_name"],
-                                  r.get("stock_code", ""), r["report_nm"]))
+                                  (r.get("stock_code") or "").strip(), r["report_nm"], r.get("corp_cls", "")))
         if page >= int(data.get("total_page", 1)):
             return out
         page += 1
+
+
+# --- original filing text (document.xml) -----------------------------------------------
+# Behaviour checked against OpenDartReader (FinanceData/OpenDartReader, dart_list.document):
+# an error comes back as a small XML with <status>/<message>; success is a ZIP whose
+# alphabetically first XML ("<rcept_no>.xml") is the main document; attachments follow.
+
+_DECL = re.compile(rb'<\?xml[^>]*encoding=["\']([A-Za-z0-9_-]+)["\']', re.I)
+_CELL_END = re.compile(r"</(?:TD|TE|TU|TH)\s*>", re.I)
+_ROW_END = re.compile(r"</TR\s*>", re.I)
+_BLOCK = re.compile(r"<(?:/?P|/?TITLE|BR|/?TABLE|PGBRK|/?SECTION-\d+|/?COVER|/?LIBRARY|/?BODY)\b[^>]*>", re.I)
+_TAG = re.compile(r"<[^>]+>")
+
+
+def _decode(data: bytes) -> str:
+    m = _DECL.search(data[:300])
+    for enc in ([m.group(1).decode()] if m else []) + ["utf-8", "cp949"]:
+        try:
+            return data.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def xml_to_text(xml: str) -> str:
+    """DART XML -> plain text. Table rows become 'cell | cell' lines so numbers keep their labels."""
+    t = _CELL_END.sub(" | ", xml)
+    t = _ROW_END.sub("\n", t)
+    t = _BLOCK.sub("\n", t)
+    t = html.unescape(_TAG.sub("", t))
+    lines = (re.sub(r"[ \t 　]+", " ", line).strip(" |") for line in t.splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+def fetch_document(api_key: str, rcept_no: str, fetch: Callable[[str], bytes] | None = None) -> str:
+    fetch = fetch or (lambda url: urllib.request.urlopen(url, timeout=60).read())
+    data = fetch(f"{BASE}/document.xml?{urllib.parse.urlencode({'crtfc_key': api_key, 'rcept_no': rcept_no})}")
+    if not zipfile.is_zipfile(io.BytesIO(data)):
+        status = re.search(rb"<status>\s*(\d+)\s*</status>", data)
+        message = re.search(rb"<message>(.*?)</message>", data, re.S)
+        code = status.group(1).decode() if status else "?"
+        msg = _decode(message.group(1)).strip() if message else _decode(data[:200])
+        if code == "020":
+            raise RateLimited(msg)
+        raise DartError(f"{code}: {msg}")
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        names = sorted(n for n in zf.namelist() if n.lower().endswith(".xml"))
+        if not names:
+            raise DartError("document ZIP contains no XML")
+        main = f"{rcept_no}.xml" if f"{rcept_no}.xml" in names else names[0]
+        return xml_to_text(_decode(zf.read(main)))

@@ -17,7 +17,7 @@
 ## 구성
 
 ```
-[데이터]   OpenDART(공시) · KIS Open API(시세·계좌) · KRX Open API(과거 주가)
+[데이터]   OpenDART(공시 목록·원문) · KIS Open API(수정주가·지수)
     ↓
 [OCI 서버, 24시간]  LangGraph 워크플로 · 정책 엔진 · 성적표 DB · Discord 봇
     ↓  Tailscale
@@ -37,16 +37,54 @@
 ## 진행 단계
 
 - [x] **0. 기반**: 정책 엔진, LLM 자동 전환, 성적표, 숫자 검증, LangGraph 1단계 흐름, Discord 알림·승인 (테스트 34개)
-- [ ] **1. 봇 품질 보증**: 실제 공시 원문 수집(`document.xml`), 주가 연결 후 자동 채점
+- [x] **1. 봇 품질 보증**: 관심 종목 공시 감시, 공시 원문 수집(`document.xml`), KIS 수정주가로 자동 채점(다음 거래일 시가 진입, 시장 지수 대비), Discord 봇(`/report`), 재시작해도 승인 대기와 기록이 이어지는 체크포인트, 서버용 Docker (테스트 70개)
 - [ ] **2. 보유 종목 악재 경보**: 감사보고서 지연, CB 리픽싱, 전환 주식 추가상장, 최대주주 지분 변동. PR-AUC·리드타임으로 평가
 - [ ] **3. 공시 유형별 기저율**: 자사주·CB·유상증자·감사 관련·내부자 매매 5개 유형의 과거 반응 분포
 - [ ] 연구 트랙: Lazy Prices 한국판 (사업보고서 문장 변화와 이후 수익률)
+
+## 1단계 흐름
+
+```
+10분마다 (평일 07~21시)   OpenDART에서 오늘 공시 목록 → 관심 종목만 골라냄
+        ↓                 (그날 첫 실행은 최근 3일을 다시 훑어 주말·심야 공시도 놓치지 않음)
+공시 원문 내려받기 → Qwen 요약 → 숫자 검증
+        ↓ 숫자가 전부 원문에 있음          ↓ 원문에 없는 숫자가 있음
+성적표에 기록 → Discord 알림     Discord [승인]/[거절] → 승인 시에만 기록 (30분 무응답 = 거절)
+        ↓
+매일 18:30   기간이 끝난 의견을 KIS 수정주가로 채점 → 결과를 Discord에 게시 (/report로 언제든 조회)
+```
+
+공시 하나가 LangGraph 스레드 하나이고, 단계마다 체크포인트에 저장됩니다. 그래서 봇이 중간에 죽거나 Discord 전송이 실패해도 끝난 단계(성적표 기록 등)는 다시 하지 않고 멈춘 곳부터 이어갑니다.
 
 ## 시작하기
 
 ```bash
 pip install -e ".[dev]"
 pytest
+```
+
+### 서버(OCI)에서 봇 실행
+
+1. 키 준비. 키는 서버의 `.env`에만 넣습니다.
+   - OpenDART 인증키: [opendart.fss.or.kr](https://opendart.fss.or.kr)
+   - KIS 앱키·시크릿: [KIS Developers](https://apiportal.koreainvestment.com) (한국투자증권 계좌 필요, 없으면 채점만 꺼짐)
+   - Discord 봇: [개발자 포털](https://discord.com/developers/applications) → 앱 생성 → **Bot**에서 토큰 발급 → **Installation**에서 Guild Install에 `bot`·`applications.commands` 범위와 `View Channels`·`Send Messages`·`Embed Links` 권한 지정 → 설치 링크로 내 서버에 추가
+   - 채널 ID·내 사용자 ID: Discord 설정 → 고급 → 개발자 모드 켜기 → 채널/내 이름 우클릭 → ID 복사
+2. 실행
+
+```bash
+git clone https://github.com/Oilwoo/dartboard && cd dartboard
+cp .env.example .env
+nano .env
+nano watchlist.yaml
+docker compose up -d --build
+docker compose logs -f
+```
+
+3. 백업: 성적표·체크포인트는 Docker 볼륨에 있습니다.
+
+```bash
+docker compose cp bot:/app/data ./backup
 ```
 
 vLLM (4090 PC):

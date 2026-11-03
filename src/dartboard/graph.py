@@ -26,17 +26,20 @@ class State(TypedDict, total=False):
     rcept_no: str
     corp_name: str
     ticker: str
+    market: str             # OpenDART corp_cls: 'Y' KOSPI, 'K' KOSDAQ
     report_nm: str
     source_text: str
     result: dict | None     # FilingSummary as a plain dict: checkpoints only store JSON-safe values
     faith_score: float
+    faith_checked: int
+    faith_supported: int
     unsupported: list[str]
     decision: str           # "keep" | "discard" (human), "auto" when no review was needed
     forecast_id: int | None
     notified: bool
 
 
-Summarizer = Callable[[str], Awaitable[FilingSummary | None]]
+Summarizer = Callable[[State], Awaitable[FilingSummary | None]]
 Notifier = Callable[[State], Awaitable[None]]
 
 
@@ -45,21 +48,27 @@ def build(summarize: Summarizer, ledger: Ledger, notify: Notifier, model_name: s
         return FilingSummary(**s["result"]) if s.get("result") else None
 
     async def summarize_node(s: State) -> State:
-        r = await summarize(s["source_text"])
+        r = await summarize(s)
         return {"result": r.model_dump() if r else None}
 
     def check_node(s: State) -> State:
         r = result(s)
         if r is None:  # every model failed: rules only, the human sees the raw filing
-            return {"faith_score": 0.0, "unsupported": ["요약 실패"]}
+            return {"faith_score": 0.0, "faith_checked": 0, "faith_supported": 0, "unsupported": ["요약 실패"]}
         rep = check(r.summary, s["source_text"])
-        return {"faith_score": rep.score, "unsupported": rep.unsupported}
+        return {"faith_score": rep.score, "faith_checked": rep.checked, "faith_supported": rep.supported,
+                "unsupported": rep.unsupported}
 
     def route(s: State) -> str:
         return "record" if s["faith_score"] == 1.0 else "review"
 
     def review_node(s: State) -> State:
-        answer = interrupt({"rcept_no": s["rcept_no"], "unsupported": s["unsupported"],
+        # everything the human needs to decide travels with the pause, so it can be re-asked after a restart
+        r = s.get("result") or {}
+        answer = interrupt({"rcept_no": s["rcept_no"], "corp_name": s.get("corp_name", ""),
+                            "report_nm": s.get("report_nm", ""), "summary": r.get("summary", ""),
+                            "stance": r.get("stance", "none"), "unsupported": s["unsupported"],
+                            "checked": s.get("faith_checked", 0), "supported": s.get("faith_supported", 0),
                             "question": "원문에 없는 숫자가 있습니다. 이 요약을 기록할까요? (keep/discard)"})
         return {"decision": "keep" if answer == "keep" else "discard"}
 
@@ -69,7 +78,7 @@ def build(summarize: Summarizer, ledger: Ledger, notify: Notifier, model_name: s
             return {"forecast_id": None, "decision": s.get("decision", "auto")}
         fid = ledger.append(ticker=s["ticker"], stance=r.stance, confidence=r.confidence,
                             horizon_days=r.horizon_days, rationale=r.summary,
-                            sources=[f"dart:{s['rcept_no']}"], model=model_name)
+                            sources=[f"dart:{s['rcept_no']}"], model=model_name, market=s.get("market", "Y"))
         return {"forecast_id": fid, "decision": s.get("decision", "auto")}
 
     async def notify_node(s: State) -> State:

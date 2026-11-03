@@ -14,7 +14,7 @@ INPUT = {"rcept_no": "20261103000247", "corp_name": "테스트전자", "ticker":
 def make(summary_text, stance="buy"):
     sent = []
 
-    async def summarize(_text):
+    async def summarize(_state):
         return FilingSummary(summary=summary_text, stance=stance, confidence=0.6, horizon_days=20)
 
     async def notify(state):
