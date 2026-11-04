@@ -44,14 +44,14 @@ def run():
 
 def test_pc_on_uses_local_vllm(servers, monkeypatch):
     configure(monkeypatch, "http://127.0.0.1:18504/v1")
-    out, _ = run()
-    assert out.summary.endswith("[vllm]")
+    (summary, model), _ = run()
+    assert summary.summary.endswith("[vllm]") and model == "qwen"
 
 
 def test_pc_off_and_groq_rate_limited_falls_to_gemini_fast(servers, monkeypatch):
     configure(monkeypatch, "http://127.0.0.1:18501/v1")  # nothing listening = PC off
-    out, secs = run()
-    assert out.summary.endswith("[gemini]")
+    (summary, model), secs = run()
+    assert summary.summary.endswith("[gemini]") and model == "flash"  # the ledger must name the fallback
     assert secs < 3, secs  # with library defaults this path took ~61 s
 
 

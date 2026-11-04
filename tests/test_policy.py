@@ -21,12 +21,12 @@ def engine(clock=None):
 
 
 def test_within_limits_runs_automatically_but_dry_run_by_default():
-    v = engine().decide(Action("e1", "upbit:order", 30_000))
+    v = engine().decide(Action("e1", "kis:order", 30_000))
     assert v.decision is Decision.AUTO and v.dry_run is True
 
 
 def test_over_per_order_limit_needs_approval():
-    assert engine().decide(Action("e1", "upbit:order", 60_000)).decision is Decision.NEEDS_APPROVAL
+    assert engine().decide(Action("e1", "kis:order", 60_000)).decision is Decision.NEEDS_APPROVAL
 
 
 def test_unknown_target_needs_approval():
@@ -37,33 +37,33 @@ def test_daily_limit_and_rolling_window():
     c = Clock()
     e = engine(c)
     for i in range(4):  # 4 x 50,000 = 200,000 (the daily limit), spread over hours
-        a = Action(f"e{i}", "upbit:order", 50_000)
+        a = Action(f"e{i}", "kis:order", 50_000)
         assert e.decide(a).decision is Decision.AUTO
         e.record_executed(a)
         c.t += 3_601
-    assert e.decide(Action("e9", "upbit:order", 10_000)).reason == "would exceed daily spend limit"
+    assert e.decide(Action("e9", "kis:order", 10_000)).reason == "would exceed daily spend limit"
     c.t += 86_400  # a day later the window has rolled
-    assert e.decide(Action("e10", "upbit:order", 10_000)).decision is Decision.AUTO
+    assert e.decide(Action("e10", "kis:order", 10_000)).decision is Decision.AUTO
 
 
 def test_hourly_order_count():
     e = engine()
     for i in range(3):
-        a = Action(f"e{i}", "upbit:order", 1_000)
+        a = Action(f"e{i}", "kis:order", 1_000)
         e.record_executed(a)
-    assert e.decide(Action("e4", "upbit:order", 1_000)).reason == "hourly order limit reached"
+    assert e.decide(Action("e4", "kis:order", 1_000)).reason == "hourly order limit reached"
 
 
 def test_duplicate_event_is_refused():
     e = engine()
-    a = Action("same-event", "upbit:order", 1_000)
+    a = Action("same-event", "kis:order", 1_000)
     e.record_executed(a)
     assert e.decide(a).decision is Decision.DENY
 
 
 def test_rejected_event_is_not_asked_again():
     e = engine()
-    a = Action("asked-once", "upbit:order", 90_000)
+    a = Action("asked-once", "kis:order", 90_000)
     assert e.decide(a).decision is Decision.NEEDS_APPROVAL
     e.record_rejected(a)
     assert e.decide(a).decision is Decision.DENY
@@ -72,10 +72,10 @@ def test_rejected_event_is_not_asked_again():
 def test_kill_switch_blocks_everything():
     e = engine()
     e.halt()
-    assert e.decide(Action("e1", "upbit:order", 1_000)).decision is Decision.DENY
+    assert e.decide(Action("e1", "kis:order", 1_000)).decision is Decision.DENY
     e.halt(False)
-    assert e.decide(Action("e1", "upbit:order", 1_000)).decision is Decision.AUTO
+    assert e.decide(Action("e1", "kis:order", 1_000)).decision is Decision.AUTO
 
 
 def test_non_positive_amount_is_refused():
-    assert engine().decide(Action("e1", "upbit:order", 0)).decision is Decision.DENY
+    assert engine().decide(Action("e1", "kis:order", 0)).decision is Decision.DENY

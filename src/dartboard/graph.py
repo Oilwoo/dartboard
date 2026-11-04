@@ -1,7 +1,6 @@
 """Stage 1 workflow (LangGraph): summarize a filing -> check its numbers -> record the opinion -> notify.
 
-When the summary contains numbers that are not in the original filing, the graph pauses with
-`interrupt()` and waits for a human decision (sent from Discord), then resumes from the checkpoint.
+A summary with numbers missing from the filing pauses at `review` until a human answers on Discord.
 """
 from __future__ import annotations
 
@@ -26,60 +25,62 @@ class State(TypedDict, total=False):
     rcept_no: str
     corp_name: str
     ticker: str
-    market: str             # OpenDART corp_cls: 'Y' KOSPI, 'K' KOSDAQ
+    market: str           # OpenDART corp_cls: Y KOSPI, K KOSDAQ
     report_nm: str
     source_text: str
-    result: dict | None     # FilingSummary as a plain dict: checkpoints only store JSON-safe values
-    faith_score: float
+    result: dict | None   # FilingSummary as a dict: checkpoints store only JSON-safe values
+    model: str            # the model that actually answered
     faith_checked: int
     faith_supported: int
     unsupported: list[str]
-    decision: str           # "keep" | "discard" (human), "auto" when no review was needed
+    decision: str         # keep / discard (human), auto (no review needed)
     forecast_id: int | None
     notified: bool
 
 
-Summarizer = Callable[[State], Awaitable[FilingSummary | None]]
+Summarizer = Callable[[State], Awaitable[tuple[FilingSummary, str] | None]]
 Notifier = Callable[[State], Awaitable[None]]
 
 
-def build(summarize: Summarizer, ledger: Ledger, notify: Notifier, model_name: str, checkpointer):
-    def result(s: State) -> FilingSummary | None:
+def build(summarize: Summarizer, ledger: Ledger, notify: Notifier, checkpointer):
+    def summary_of(s: State) -> FilingSummary | None:
         return FilingSummary(**s["result"]) if s.get("result") else None
 
     async def summarize_node(s: State) -> State:
-        r = await summarize(s)
-        return {"result": r.model_dump() if r else None}
+        out = await summarize(s)
+        if out is None:
+            return {"result": None}
+        summary, model = out
+        return {"result": summary.model_dump(), "model": model}
 
     def check_node(s: State) -> State:
-        r = result(s)
-        if r is None:  # every model failed: rules only, the human sees the raw filing
-            return {"faith_score": 0.0, "faith_checked": 0, "faith_supported": 0, "unsupported": ["요약 실패"]}
+        r = summary_of(s)
+        if r is None:  # every model failed: a human decides from the original filing
+            return {"faith_checked": 0, "faith_supported": 0, "unsupported": ["요약 실패"]}
         rep = check(r.summary, s["source_text"])
-        return {"faith_score": rep.score, "faith_checked": rep.checked, "faith_supported": rep.supported,
-                "unsupported": rep.unsupported}
+        return {"faith_checked": rep.checked, "faith_supported": rep.supported, "unsupported": rep.unsupported}
 
     def route(s: State) -> str:
-        return "record" if s["faith_score"] == 1.0 else "review"
+        return "review" if s["unsupported"] else "record"
 
     def review_node(s: State) -> State:
-        # everything the human needs to decide travels with the pause, so it can be re-asked after a restart
+        # the question carries everything needed to ask it again after a restart
         r = s.get("result") or {}
-        answer = interrupt({"rcept_no": s["rcept_no"], "corp_name": s.get("corp_name", ""),
-                            "report_nm": s.get("report_nm", ""), "summary": r.get("summary", ""),
-                            "stance": r.get("stance", "none"), "unsupported": s["unsupported"],
-                            "checked": s.get("faith_checked", 0), "supported": s.get("faith_supported", 0),
-                            "question": "원문에 없는 숫자가 있습니다. 이 요약을 기록할까요? (keep/discard)"})
+        answer = interrupt({"rcept_no": s["rcept_no"], "corp_name": s["corp_name"], "report_nm": s["report_nm"],
+                            "summary": r.get("summary", ""), "stance": r.get("stance", "none"),
+                            "checked": s["faith_checked"], "supported": s["faith_supported"],
+                            "unsupported": s["unsupported"]})
         return {"decision": "keep" if answer == "keep" else "discard"}
 
     def record_node(s: State) -> State:
-        r = result(s)
-        if s.get("decision") == "discard" or r is None or r.stance == "none":
-            return {"forecast_id": None, "decision": s.get("decision", "auto")}
+        r = summary_of(s)
+        decision = s.get("decision", "auto")
+        if decision == "discard" or r is None or r.stance == "none":
+            return {"forecast_id": None, "decision": decision}
         fid = ledger.append(ticker=s["ticker"], stance=r.stance, confidence=r.confidence,
-                            horizon_days=r.horizon_days, rationale=r.summary,
-                            sources=[f"dart:{s['rcept_no']}"], model=model_name, market=s.get("market", "Y"))
-        return {"forecast_id": fid, "decision": s.get("decision", "auto")}
+                            horizon_days=r.horizon_days, rationale=r.summary, sources=[f"dart:{s['rcept_no']}"],
+                            model=s["model"], market=s.get("market", "Y"))
+        return {"forecast_id": fid, "decision": decision}
 
     async def notify_node(s: State) -> State:
         await notify(s)

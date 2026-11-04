@@ -11,17 +11,17 @@ INPUT = {"rcept_no": "20261103000247", "corp_name": "테스트전자", "ticker":
          "report_nm": "자기주식취득결정", "source_text": SOURCE}
 
 
-def make(summary_text, stance="buy"):
+def make(summary_text, stance="buy", model="gemini-flash"):
     sent = []
 
     async def summarize(_state):
-        return FilingSummary(summary=summary_text, stance=stance, confidence=0.6, horizon_days=20)
+        return FilingSummary(summary=summary_text, stance=stance, confidence=0.6, horizon_days=20), model
 
     async def notify(state):
         sent.append(state)
 
     ledger = Ledger()
-    app = build(summarize, ledger, notify, model_name="qwen-test", checkpointer=InMemorySaver())
+    app = build(summarize, ledger, notify, checkpointer=InMemorySaver())
     return app, ledger, sent
 
 
@@ -30,6 +30,7 @@ def test_faithful_summary_is_recorded_and_notified_without_review():
     out = asyncio.run(app.ainvoke(INPUT, {"configurable": {"thread_id": "t1"}}))
     assert out["decision"] == "auto" and out["forecast_id"] == 1 and out["notified"]
     assert len(sent) == 1 and ledger.verify_chain() is None
+    assert ledger.db.execute("SELECT model FROM forecasts").fetchone() == ("gemini-flash",)  # who really answered
 
 
 def test_unfaithful_summary_pauses_then_human_keeps_it():

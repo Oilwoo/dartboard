@@ -1,7 +1,6 @@
 """Forecast ledger ("예측 성적표"): every opinion is stamped when it is made and scored later.
 
-* Append-only: SQLite triggers refuse UPDATE and DELETE, so a result cannot be edited after the fact.
-* Hash chain: each row stores the hash of the previous row, so tampering with the file is detectable.
+Append-only (SQLite triggers refuse UPDATE and DELETE) and hash-chained (editing the file is detectable).
 """
 from __future__ import annotations
 
@@ -57,31 +56,30 @@ def _hash(prev_hash: str, record: dict) -> str:
 class Report:
     scored: int
     hit_rate: float | None
-    brier: float | None  # lower is better; 0.25 = coin-flip confidence
+    brier: float | None  # lower is better; 0.25 is coin-flip confidence
     mean_excess_buy: float | None
     mean_excess_sell: float | None
 
 
 class Ledger:
     def __init__(self, path: str = ":memory:", hold_band: float = 0.02, clock=None):
-        # LangGraph runs sync nodes in worker threads, so the connection is shared behind a lock
+        # LangGraph runs sync nodes in worker threads, so one connection is shared behind a lock
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.lock = threading.Lock()
         self.db.executescript(SCHEMA)
-        self.hold_band = hold_band  # |excess return| within this band counts as a correct "hold"
+        self.hold_band = hold_band  # a "hold" is right when the excess return stays within this band
         self.clock = clock or (lambda: datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
     def append(self, ticker: str, stance: str, confidence: float, horizon_days: int,
                rationale: str, sources: list[str], model: str, market: str = "Y") -> int:
-        """market: OpenDART corp_cls ('Y' KOSPI, 'K' KOSDAQ, ...) - picks the benchmark index when scoring."""
+        """market is the OpenDART corp_cls; it picks the benchmark index when scoring."""
         if stance not in STANCES:
             raise ValueError(f"stance must be one of {STANCES}")
-        with self.lock:  # read-prev-hash and insert must not interleave
+        with self.lock:  # reading the last hash and inserting must not interleave
             row = self.db.execute("SELECT hash FROM forecasts ORDER BY id DESC LIMIT 1").fetchone()
             prev = row[0] if row else "genesis"
             rec = {"created_at": self.clock(), "ticker": ticker, "market": market, "stance": stance,
-                   "confidence": float(confidence),
-                   "horizon_days": int(horizon_days), "rationale": rationale,
+                   "confidence": float(confidence), "horizon_days": int(horizon_days), "rationale": rationale,
                    "sources": json.dumps(sources, ensure_ascii=False), "model": model}
             cur = self.db.execute(
                 f"INSERT INTO forecasts ({', '.join(FIELDS)}, prev_hash, hash) "
@@ -92,26 +90,29 @@ class Ledger:
             return cur.lastrowid
 
     def verify_chain(self) -> int | None:
-        """Returns None when the chain is intact, otherwise the id of the first bad row."""
+        """None when the chain is intact, otherwise the id of the first bad row."""
         prev = "genesis"
         for row in self.db.execute(f"SELECT id, {', '.join(FIELDS)}, prev_hash, hash FROM forecasts ORDER BY id"):
-            rec = dict(zip(FIELDS, row[1:1 + len(FIELDS)]))
+            rec = dict(zip(FIELDS, row[1:-2], strict=True))
             if row[-2] != prev or row[-1] != _hash(prev, rec):
                 return row[0]
             prev = row[-1]
         return None
 
     def due(self, today_iso: str) -> list[tuple[int, str, str, str, int]]:
-        """Unscored forecasts whose horizon has passed: (id, ticker, market, created_at, horizon_days)."""
+        """Unscored forecasts whose horizon has passed: (id, ticker, market, created_at, horizon_days).
+
+        created_at is UTC; the horizon counts Korean calendar days (UTC+9, no daylight saving).
+        """
         return self.db.execute(
             """SELECT f.id, f.ticker, f.market, f.created_at, f.horizon_days
                FROM forecasts f LEFT JOIN outcomes o ON o.forecast_id = f.id
-               WHERE o.forecast_id IS NULL AND date(f.created_at, '+' || f.horizon_days || ' days') <= date(?)""",
+               WHERE o.forecast_id IS NULL
+                 AND date(f.created_at, '+9 hours', '+' || f.horizon_days || ' days') <= date(?)""",
             (today_iso,),
         ).fetchall()
 
     def score(self, forecast_id: int, stock_return: float, bench_return: float) -> None:
-        """Returns are measured by the caller from adjusted prices over the forecast horizon."""
         with self.lock:
             self.db.execute("INSERT INTO outcomes VALUES (?, ?, ?, ?)",
                             (forecast_id, self.clock(), float(stock_return), float(bench_return)))

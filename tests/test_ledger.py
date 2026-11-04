@@ -37,6 +37,13 @@ def test_tampering_with_the_file_is_detected(tmp_path):
     assert Ledger(str(tmp_path / "l.db")).verify_chain() == bad
 
 
+def test_horizon_counts_korean_calendar_days():
+    led = Ledger(clock=lambda: "2026-01-05T22:30:00+00:00")  # Tuesday 07:30 in Korea, still Monday in UTC
+    led.append("A", "buy", 0.6, 5, "r", [], "m")
+    assert led.due("2026-01-10") == []        # 5 days after Monday would score it a day early
+    assert len(led.due("2026-01-11")) == 1    # 5 days after Tuesday
+
+
 def test_invalid_stance_is_rejected():
     with pytest.raises(ValueError):
         make().append("005930", "moon", 0.9, 20, "x", [], "qwen")

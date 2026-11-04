@@ -23,11 +23,10 @@ class Settings:
     poll_minutes: int = 10
     review_timeout_s: int = 1800
     summary_max_chars: int = 12000
-    model_name: str = "local"
 
 
 def load_dotenv(path: str = ".env", env: dict | None = None) -> None:
-    """Minimal KEY=VALUE reader. Existing environment variables win."""
+    """Minimal KEY=VALUE reader. Variables already set win."""
     env = os.environ if env is None else env
     if not os.path.exists(path):
         return
@@ -41,7 +40,7 @@ def load_dotenv(path: str = ".env", env: dict | None = None) -> None:
 
 
 def load_watchlist(path: str) -> dict[str, str]:
-    # BaseLoader keeps every value as written: plain YAML would read 000660 as an octal number (432)
+    # BaseLoader keeps every value as written: plain YAML reads 000660 as the octal number 432
     with open(path, encoding="utf-8") as f:
         data = yaml.load(f, Loader=yaml.BaseLoader) or {}
     stocks = data.get("stocks") or {}
@@ -69,5 +68,4 @@ def load(env: dict | None = None, watchlist_path: str = "watchlist.yaml") -> Set
         poll_minutes=int(env.get("POLL_MINUTES", "10")),
         review_timeout_s=int(env.get("REVIEW_TIMEOUT_S", "1800")),
         summary_max_chars=int(env.get("SUMMARY_MAX_CHARS", "12000")),
-        model_name=env.get("LOCAL_LLM_MODEL", "local"),
     )

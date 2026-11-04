@@ -1,10 +1,7 @@
-"""Stage 1 pipeline: today's filings for the watchlist -> LangGraph flow -> Discord.
+"""Stage 1 pipeline: new watchlist filings -> LangGraph flow -> Discord.
 
-Crash safety: every filing is its own LangGraph thread (thread_id = receipt number), saved by the
-checkpointer after each step. `_advance` always continues from the saved step, so a crash or a failed
-Discord call never repeats a finished step such as the ledger write.
-
-No Discord code lives here, so the whole path is tested with fakes.
+Each filing is its own LangGraph thread (thread_id = receipt number), saved after every step, so a
+crash or a failed Discord call never repeats a finished step such as the ledger write.
 """
 from __future__ import annotations
 
@@ -22,7 +19,7 @@ from .dart import Disclosure, RateLimited, fetch_document, list_disclosures
 from .graph import FilingSummary, Notifier, State, Summarizer, build
 from .ledger import Ledger
 
-log = logging.getLogger("dartboard.pipeline")
+log = logging.getLogger(__name__)
 
 INSTRUCTIONS = """너는 한국 상장사의 공시 원문을 읽는 리서치 보조다.
 - summary: 핵심만 한국어 3~5문장. 숫자는 원문에 적힌 그대로 복사한다(단위 환산·반올림 금지).
@@ -36,7 +33,7 @@ Approver = Callable[[dict], Awaitable[bool]]
 def llm_summarizer(max_chars: int = 12000) -> Summarizer:
     agent = llm.build_agent(FilingSummary, INSTRUCTIONS)
 
-    async def summarize(s: State) -> FilingSummary | None:
+    async def summarize(s: State) -> tuple[FilingSummary, str] | None:
         body = s["source_text"]
         note = f" (앞부분 {max_chars:,}자만 사용)" if len(body) > max_chars else ""
         prompt = f"회사: {s['corp_name']} ({s['ticker']})\n공시: {s['report_nm']}\n\n원문{note}:\n{body[:max_chars]}"
@@ -70,12 +67,12 @@ class SeenStore:
 
 class Pipeline:
     def __init__(self, *, dart_key: str, watchlist: dict[str, str], ledger: Ledger, seen: SeenStore,
-                 summarize: Summarizer, notify: Notifier, approve: Approver, checkpointer, model_name: str,
+                 summarize: Summarizer, notify: Notifier, approve: Approver, checkpointer,
                  list_fn=list_disclosures, doc_fn=fetch_document):
         self.dart_key, self.watchlist, self.seen, self.approve = dart_key, watchlist, seen, approve
         self.list_fn, self.doc_fn = list_fn, doc_fn
-        self.app = build(summarize, ledger, notify, model_name, checkpointer)
-        self._asking: set[str] = set()       # filings with a question open in Discord right now
+        self.app = build(summarize, ledger, notify, checkpointer)
+        self._asking: set[str] = set()  # filings with a question open in Discord right now
         self._tasks: set[asyncio.Task] = set()
 
     @staticmethod
@@ -83,9 +80,8 @@ class Pipeline:
         return {"configurable": {"thread_id": rcept_no}}
 
     async def run_once(self, day: date, since: date | None = None) -> list[str]:
-        """Handles new watchlist filings received from `since` (default: `day`) to `day`.
-        Returns the receipt numbers it handled. A filing that fails is left unmarked, so the next
-        run tries it again."""
+        """Handles new watchlist filings received from `since` (default `day`) to `day`.
+        Returns the receipt numbers it handled; a filing that fails is tried again on the next run."""
         await self.resume_pending()
         filings = await asyncio.to_thread(self.list_fn, self.dart_key, since or day, day)
         handled = []
@@ -98,14 +94,13 @@ class Pipeline:
                 log.warning("OpenDART daily limit reached; stopping this run")
                 break
             except Exception:
-                log.exception("filing %s failed; it will be retried on the next run", d.rcept_no)
+                log.exception("filing %s failed; it will be tried again on the next run", d.rcept_no)
                 continue
             handled.append(d.rcept_no)
         return handled
 
     async def resume_pending(self) -> int:
-        """Asks again about filings still waiting for a human (after a restart, or after a failed
-        Discord call). Returns how many it picked up."""
+        """Asks again about filings still waiting for a human, after a restart or a failed Discord call."""
         picked = 0
         for rcept_no in self.seen.pending():
             if rcept_no in self._asking:
@@ -127,14 +122,15 @@ class Pipeline:
                 "market": d.corp_cls or "Y", "report_nm": d.report_nm, "source_text": text}
 
     async def _advance(self, rcept_no: str, first_input: Callable[[], Awaitable[State]] | None) -> None:
+        """Moves one filing on from its last saved step, so finished steps never run twice."""
         cfg = self._cfg(rcept_no)
         snap = await self.app.aget_state(cfg)
         if snap.interrupts:                          # paused, waiting for a human
             question = snap.interrupts[0].value
         else:
-            if snap.next:                            # stopped part-way: continue after the last saved step
+            if snap.next:                            # stopped part-way: continue from the saved step
                 out = await self.app.ainvoke(None, cfg)
-            elif snap.values:                        # already finished; only the bookkeeping was missed
+            elif snap.values:                        # finished, but the result was never marked
                 out = snap.values
             elif first_input is not None:
                 out = await self.app.ainvoke(await first_input(), cfg)
@@ -149,7 +145,7 @@ class Pipeline:
         self._ask(rcept_no, dict(question))
 
     def _ask(self, rcept_no: str, question: dict) -> None:
-        # the answer may take many minutes: wait for it in the background, other filings keep moving
+        # the answer can take many minutes, so wait for it in the background
         if rcept_no in self._asking:
             return
         self._asking.add(rcept_no)

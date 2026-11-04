@@ -1,7 +1,6 @@
-"""Discord runtime: polls DART on a schedule, asks for decisions with buttons, posts daily scores.
+"""Discord runtime: polls DART, asks for decisions with buttons, and posts daily scores.
 
-Run:  python -m dartboard        (reads .env and watchlist.yaml in the working directory)
-Invite the bot with the `bot` and `applications.commands` scopes (the /report command is a slash command).
+Run `python -m dartboard` in a folder with .env and watchlist.yaml.
 """
 from __future__ import annotations
 
@@ -27,7 +26,7 @@ from .prices import Kis
 from .scoring import score_due
 
 KST = ZoneInfo("Asia/Seoul")
-CATCH_UP_DAYS = 3  # the first poll of a day also sweeps the last 3 days (weekend, late filings, downtime)
+CATCH_UP_DAYS = 3  # the day's first poll looks back over weekends, late filings and downtime
 log = logging.getLogger("dartboard")
 
 
@@ -43,7 +42,7 @@ def format_report(r: Report) -> str:
 
 
 def is_market_window(now: datetime) -> bool:
-    return now.weekday() < 5 and 7 <= now.hour < 21  # filings arrive mostly on weekdays, 07:00-21:00 KST
+    return now.weekday() < 5 and 7 <= now.hour < 21
 
 
 def poll_start(today: date, last_polled: date | None) -> date:
@@ -67,7 +66,7 @@ class DartboardBot(discord.Client):
             dart_key=self.cfg.dart_key, watchlist=self.cfg.watchlist, ledger=self.ledger,
             seen=SeenStore(os.path.join(self.cfg.data_dir, "state.db")),
             summarize=llm_summarizer(self.cfg.summary_max_chars), notify=self.notify, approve=self.approve,
-            checkpointer=saver, model_name=self.cfg.model_name)
+            checkpointer=saver)
         self.kis = (Kis(self.cfg.kis_key, self.cfg.kis_secret, self.cfg.kis_env,
                         os.path.join(self.cfg.data_dir, "kis_token.json")) if self.cfg.kis_key else None)
 
@@ -81,7 +80,7 @@ class DartboardBot(discord.Client):
         self.daily_score.start()
 
     async def on_ready(self) -> None:
-        picked = await self.pipeline.resume_pending()  # idempotent, so reconnects are harmless
+        picked = await self.pipeline.resume_pending()  # safe to repeat, so reconnects are harmless
         log.info("ready as %s; watching %d stocks; %d pending decision(s) picked up",
                  self.user, len(self.cfg.watchlist), picked)
 

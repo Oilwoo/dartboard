@@ -1,16 +1,13 @@
-"""Faithfulness check ("요약 충실도"): does every number in a summary appear in the source filing?
+"""Checks that every number in a summary also appears in the source filing.
 
-A deterministic first pass. It catches the most damaging summary error in finance (a wrong figure)
-without any model call. Unit conversions (억원 vs 원) are flagged for review, not guessed.
+Unit conversions (875억 vs 87,500,000,000원) are flagged for a human, never guessed.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 
-# a number (with thousands separators or decimals) and an optional Korean/financial unit
 NUM = re.compile(r"(?<![\d.])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?\s*(조|억|만|원|%|퍼센트|주|배|bp)?")
-IGNORE_UNITS = {None}  # bare numbers such as years or list numbering are too ambiguous to judge
 
 
 def _norm(integer: str, frac: str | None) -> str:
@@ -18,14 +15,13 @@ def _norm(integer: str, frac: str | None) -> str:
     return f"{value}.{frac.rstrip('0')}".rstrip(".") if frac else value
 
 
-def _numbers(text: str) -> list[tuple[str, str | None, str]]:
-    """(normalized value, unit, original text) for each number with a unit."""
+def _numbers(text: str) -> list[tuple[str, str, str]]:
+    """(value, unit, original text) for each number with a unit. Bare numbers such as years are too ambiguous."""
     out = []
     for m in NUM.finditer(text):
-        unit = "%" if m.group(3) == "퍼센트" else m.group(3)
-        if unit in IGNORE_UNITS:
-            continue
-        out.append((_norm(m.group(1), m.group(2)), unit, m.group(0).strip()))
+        if m.group(3):
+            unit = "%" if m.group(3) == "퍼센트" else m.group(3)
+            out.append((_norm(m.group(1), m.group(2)), unit, m.group(0).strip()))
     return out
 
 
@@ -41,14 +37,13 @@ class FaithfulnessReport:
 
 
 def check(summary: str, source: str) -> FaithfulnessReport:
-    source_values = {(v, u) for v, u, _ in _numbers(source)}
-    source_bare = {v for v, _, _ in _numbers(source)} | {_norm(m.group(1), m.group(2)) for m in NUM.finditer(source)}
+    with_unit = {(value, unit) for value, unit, _ in _numbers(source)}
+    bare = {_norm(m.group(1), m.group(2)) for m in NUM.finditer(source)}
+
+    def supported(value: str, unit: str) -> bool:
+        # tables often put 원 or 주 in the header row instead of next to each number
+        return (value, unit) in with_unit or (unit in ("원", "주") and value in bare)
+
     found = _numbers(summary)
-    unsupported = []
-    for value, unit, original in found:
-        if (value, unit) in source_values:
-            continue
-        if unit in ("원", "주") and value in source_bare:  # same figure written with a different unit spacing
-            continue
-        unsupported.append(original)
-    return FaithfulnessReport(checked=len(found), supported=len(found) - len(unsupported), unsupported=unsupported)
+    unsupported = [original for value, unit, original in found if not supported(value, unit)]
+    return FaithfulnessReport(len(found), len(found) - len(unsupported), unsupported)

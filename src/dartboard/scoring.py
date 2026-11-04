@@ -1,21 +1,18 @@
-"""Scores due forecasts: stock return minus benchmark return over the same window.
+"""Scores due forecasts: the stock's return minus its market index's return over the same window.
 
-Entry: the open of the first trading day AFTER the forecast date (KST). Opinions are often made
-during market hours, so using that day's prices would leak information we did not have.
-Exit: the close of the last trading day on or before forecast date + horizon_days.
+Entry is the open of the first trading day after the forecast date (KST): an opinion made during
+market hours must not be scored with prices it may already have seen.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Protocol
-from zoneinfo import ZoneInfo
 
 from .ledger import Ledger
-from .prices import BENCHMARK, Bar
+from .prices import BENCHMARK, KST, Bar
 
-KST = ZoneInfo("Asia/Seoul")
-MAX_GAP_DAYS = 10  # last bar further than this before the exit date: halted or delisted -> manual check
+MAX_GAP_DAYS = 10  # a longer gap before the exit date means a halt or delisting: leave it for a human
 
 
 class PriceSource(Protocol):
@@ -23,11 +20,8 @@ class PriceSource(Protocol):
 
 
 def window_return(bars: list[Bar], made_on: date, horizon_days: int) -> float | None:
-    after = [b for b in bars if b.day > made_on]
-    if not after:
-        return None
     exit_by = made_on + timedelta(days=horizon_days)
-    held = [b for b in after if b.day <= exit_by]
+    held = [b for b in bars if made_on < b.day <= exit_by]
     if not held or (exit_by - held[-1].day).days > MAX_GAP_DAYS:
         return None
     return held[-1].close / held[0].open - 1
@@ -59,5 +53,5 @@ def score_due(ledger: Ledger, prices: PriceSource, today: date) -> list[ScoreRes
         r = ScoreResult(fid, ticker, stock, bench)
         if r.scored:
             ledger.score(fid, stock, bench)
-        results.append(r)  # unscored ones stay due and are retried next run
+        results.append(r)  # unscored ones stay due and are tried again on the next run
     return results

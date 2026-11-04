@@ -27,7 +27,8 @@ def make(*, summaries=None, filings=None, approve=None, notify=None, doc_fn=None
 
     async def summarize(state):
         text = summaries.get(state["rcept_no"], FAITHFUL)
-        return None if text is None else FilingSummary(summary=text, stance="buy", confidence=0.6, horizon_days=20)
+        return None if text is None else (FilingSummary(summary=text, stance="buy", confidence=0.6, horizon_days=20),
+                                          "qwen-test")
 
     async def default_notify(state):
         log["notified"].append(state["rcept_no"])
@@ -43,7 +44,7 @@ def make(*, summaries=None, filings=None, approve=None, notify=None, doc_fn=None
     p = Pipeline(dart_key="key", watchlist={"005930": "테스트전자", "035720": "카카오"},
                  ledger=ledger if ledger is not None else Ledger(), seen=seen or SeenStore(),
                  summarize=summarize, notify=notify or default_notify, approve=approve or default_approve,
-                 checkpointer=checkpointer or InMemorySaver(), model_name="qwen-test",
+                 checkpointer=checkpointer or InMemorySaver(),
                  list_fn=lambda key, bgn, end: list(filings if filings is not None else [filing("A1")]),
                  doc_fn=doc_fn or default_doc)
     return p, log

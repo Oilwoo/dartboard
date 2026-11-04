@@ -1,8 +1,4 @@
-"""Discord delivery: alerts, plus [승인]/[거절] buttons for anything that needs a human.
-
-Discord rule (official docs, "Receiving and Responding"): an interaction must be acknowledged within
-3 seconds; the token then stays valid for 15 minutes. So a click is deferred first, handled after.
-"""
+"""Discord delivery: alert cards, and approve/reject buttons for anything that needs a human."""
 from __future__ import annotations
 
 import asyncio
@@ -40,7 +36,7 @@ class ApprovalView(discord.ui.View):
         return True
 
     async def _decide(self, interaction: discord.Interaction, approved: bool) -> None:
-        await interaction.response.defer()  # acknowledge inside the 3-second window
+        await interaction.response.defer()  # Discord drops a click that is not answered within 3 seconds
         if not self.result.done():
             self.result.set_result(approved)
         self.stop()

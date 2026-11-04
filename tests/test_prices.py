@@ -1,5 +1,6 @@
 import json
 from datetime import date, datetime, timedelta
+from itertools import pairwise
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -81,7 +82,7 @@ def test_long_range_is_split_into_contiguous_windows(tmp_path):
                       parse_qs(urlparse(u).query)["FID_INPUT_DATE_2"][0]) for u, _ in fake.gets())
     assert len(windows) == 3
     assert windows[0][0] == "20260101" and windows[-1][1] == "20260510"
-    for (_, hi), (lo, _) in zip(windows, windows[1:]):  # no gap, no overlap
+    for (_, hi), (lo, _) in pairwise(windows):  # no gap, no overlap
         assert datetime.strptime(lo, "%Y%m%d") - datetime.strptime(hi, "%Y%m%d") == timedelta(days=1)
 
 
