@@ -29,15 +29,23 @@ def test_short_code_is_rejected(tmp_path):
         load_watchlist(str(f))
 
 
+EXAMPLE = str(ROOT / "watchlist.example.yaml")
+
+
 def test_example_watchlist_loads():
-    assert load_watchlist(str(ROOT / "watchlist.yaml"))["005930"] == "삼성전자"
+    assert load_watchlist(EXAMPLE)["005930"] == "삼성전자"
 
 
 def test_settings_from_environment():
-    cfg = load(dict(ENV, KIS_APP_KEY="k", POLL_MINUTES="5"), watchlist_path=str(ROOT / "watchlist.yaml"))
+    cfg = load(dict(ENV, KIS_APP_KEY="k", POLL_MINUTES="5"), watchlist_path=EXAMPLE)
     assert (cfg.channel_id, cfg.approver_id, cfg.poll_minutes, cfg.kis_key, cfg.kis_env) == (123, 456, 5, "k", "real")
 
 
 def test_missing_settings_are_named():
     with pytest.raises(SystemExit, match="DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID"):
-        load({"DART_API_KEY": "d", "DISCORD_APPROVER_USER_ID": "1"}, watchlist_path=str(ROOT / "watchlist.yaml"))
+        load({"DART_API_KEY": "d", "DISCORD_APPROVER_USER_ID": "1"}, watchlist_path=EXAMPLE)
+
+
+def test_missing_watchlist_says_how_to_create_it(tmp_path):
+    with pytest.raises(SystemExit, match="cp watchlist.example.yaml"):
+        load(ENV, watchlist_path=str(tmp_path / "watchlist.yaml"))

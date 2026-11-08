@@ -4,6 +4,8 @@
 data/
 # README's backup command copies kis_token.json straight into backup/
 backup/
+# your real stocks stay private; only watchlist.example.yaml is public
+watchlist.yaml
 *.db
 *.sqlite
 __pycache__/

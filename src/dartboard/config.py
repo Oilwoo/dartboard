@@ -55,6 +55,8 @@ def load(env: dict | None = None, watchlist_path: str = "watchlist.yaml") -> Set
     missing = [k for k in REQUIRED if not env.get(k)]
     if missing:
         raise SystemExit(f"missing settings in .env: {', '.join(missing)}")
+    if not os.path.isfile(watchlist_path):
+        raise SystemExit(f"{watchlist_path} not found: cp watchlist.example.yaml {watchlist_path}, then list your stocks")
     return Settings(
         dart_key=env["DART_API_KEY"],
         discord_token=env["DISCORD_BOT_TOKEN"],

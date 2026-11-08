@@ -11,7 +11,7 @@
 
 1. **공시 요약**: 새 공시를 Qwen으로 요약합니다.
 2. **숫자 검증**: 요약 속 숫자가 공시 원문에 실제로 있는지 확인합니다. 없으면 멈추고 Discord로 사람에게 묻습니다.
-3. **예측 성적표**: 의견(매수·매도·관망)을 시점 고정으로 기록합니다. 기록은 수정·삭제가 불가능하고(해시 체인), 기간이 지나면 시장 대비 초과수익으로 채점합니다.
+3. **예측 성적표**: 의견(매수·매도·관망)을 시점 고정으로 기록하고, 기간이 지나면 시장 대비 초과수익으로 채점합니다. DB가 기록의 수정·삭제 명령을 거부하고, 기록마다 앞 기록의 해시를 이어 붙여서 파일을 몰래 고치면 드러나게 했습니다(변조 감지). 다만 파일을 통째로 다시 쓰는 것까지 막지는 못합니다.
 4. **통제된 실행**: 돈이 걸린 동작은 LLM이 아니라 코드로 된 정책 엔진이 결정합니다. 1회·하루·시간당 한도, 중복 차단, 긴급 정지를 지원합니다.
 
 ## 구성
@@ -54,7 +54,7 @@
 매일 18:30   기간이 끝난 의견을 KIS 수정주가로 채점 → 결과를 Discord에 게시 (/report로 언제든 조회)
 ```
 
-공시 하나가 LangGraph 스레드 하나이고, 단계마다 체크포인트에 저장됩니다. 그래서 봇이 중간에 죽거나 Discord 전송이 실패해도 끝난 단계(성적표 기록 등)는 다시 하지 않고 멈춘 곳부터 이어갑니다.
+공시 하나가 LangGraph 스레드 하나이고, 단계마다 체크포인트에 저장됩니다. 그래서 봇이 중간에 죽거나 Discord 전송이 실패해도 끝난 단계(성적표 기록 등)는 다시 하지 않고 멈춘 곳부터 이어갑니다. 다만 성적표에 쓴 직후, 그 단계가 끝났다는 저장 전에 죽으면 같은 기록이 두 번 남을 수 있습니다. 이 틈을 막는 중복 방지는 다음 설계에서 다룹니다.
 
 ## 시작하기
 
@@ -67,7 +67,7 @@ pytest
 
 1. 키 준비. 키는 서버의 `.env`에만 넣습니다.
    - OpenDART 인증키: [opendart.fss.or.kr](https://opendart.fss.or.kr)
-   - KIS 앱키·시크릿: [KIS Developers](https://apiportal.koreainvestment.com) (한국투자증권 계좌 필요, 없으면 채점만 꺼짐)
+   - KIS 앱키·시크릿: [KIS Developers](https://apiportal.koreainvestment.com) (한국투자증권 계좌 필요, 없으면 채점만 꺼짐). 돈과 주식이 없는 계좌의 실전 키를 권장합니다. 모의투자 키로 받은 시세는 빠지거나 부정확할 수 있다고 한국투자가 안내합니다.
    - Discord 봇: [개발자 포털](https://discord.com/developers/applications) → 앱 생성 → **Bot**에서 토큰 발급 → **Installation**에서 Guild Install에 `bot`·`applications.commands` 범위와 `View Channels`·`Send Messages`·`Embed Links` 권한 지정 → 설치 링크로 내 서버에 추가
    - 채널 ID·내 사용자 ID: Discord 설정 → 고급 → 개발자 모드 켜기 → 채널/내 이름 우클릭 → ID 복사
 2. 실행
@@ -76,6 +76,7 @@ pytest
 git clone https://github.com/Oilwoo/dartboard && cd dartboard
 cp .env.example .env
 nano .env
+cp watchlist.example.yaml watchlist.yaml   # 실제 종목은 이 파일에만 적습니다(git이 무시함)
 nano watchlist.yaml
 docker compose up -d --build
 docker compose logs -f
@@ -98,5 +99,5 @@ docker compose up -d
 ## 원칙
 
 - **본인 계좌 전용.** 타인에게 유료로 종목 신호를 주면 유사투자자문업 신고, 타인 계좌를 자동매매하면 투자일임업 등록 대상입니다.
-- **비밀값은 커밋하지 않습니다.** `.env`는 `.gitignore`에 있습니다.
+- **비밀값과 보유 종목은 커밋하지 않습니다.** `.env`, 실제 관심 종목(`watchlist.yaml`), 백업 폴더(`backup/`)는 `.gitignore`에 있습니다.
 - **검증 근거**는 [docs/verification.md](docs/verification.md)에 있습니다.

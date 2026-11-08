@@ -1,5 +1,6 @@
 # dartboard bot on the always-on server (OCI).
 #   cp .env.example .env   # fill in the keys
+#   cp watchlist.example.yaml watchlist.yaml   # list your stocks
 #   docker compose up -d --build
 #   docker compose logs -f
 services:
@@ -10,7 +11,12 @@ services:
     env_file: .env
     volumes:
       - dartboard-data:/app/data                 # ledger, checkpoints, KIS token: back this up
-      - ./watchlist.yaml:/app/watchlist.yaml:ro  # edit, then: docker compose restart bot
+      - type: bind                               # edit, then: docker compose restart bot
+        source: ./watchlist.yaml
+        target: /app/watchlist.yaml
+        read_only: true
+        bind:
+          create_host_path: false                # a missing file stops here instead of becoming a root-owned folder
     logging:
       driver: json-file
       options:

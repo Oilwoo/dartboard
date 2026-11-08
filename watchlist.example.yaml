@@ -1,0 +1,7 @@
+# 감시할 종목 예시: "6자리 종목코드": 이름
+# 복사해서 고치세요: cp watchlist.example.yaml watchlist.yaml
+# watchlist.yaml은 git이 무시합니다. 실제 보유·관심 종목이 공개 저장소에 올라가지 않게 하려는 것입니다.
+stocks:
+  "005930": 삼성전자
+  "000660": SK하이닉스
+  "035420": NAVER
