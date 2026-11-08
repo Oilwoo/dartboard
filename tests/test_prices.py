@@ -5,7 +5,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from dartboard.prices import KST, Kis, KisError
+from dartboard.prices import KST, SLEEP_S, Kis, KisError
 
 NOW = datetime(2026, 11, 3, 18, 0, tzinfo=KST)
 
@@ -118,4 +118,9 @@ def test_demo_environment_uses_demo_domain_and_slower_pace(tmp_path):
     fake, slept = FakeKis(), []
     Kis("key", "secret", env="demo", token_path=str(tmp_path / "t.json"), http=fake, sleep=slept.append,
         now=lambda: NOW).daily("005930", date(2026, 11, 3), date(2026, 11, 3))
-    assert fake.calls[0][1].startswith("https://openapivts.koreainvestment.com:29443/") and slept == [0.5]
+    assert fake.calls[0][1].startswith("https://openapivts.koreainvestment.com:29443/") and slept == [1.1]
+
+
+def test_pace_stays_under_kis_limits():
+    # KIS notice (2026-04-20): 모의 allows 1 call/s, and a newly issued real key 3/s for its first 3 days
+    assert SLEEP_S["demo"] > 1.0 and SLEEP_S["real"] >= 1 / 3

@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from dartboard.ledger import Ledger
-from dartboard.prices import Bar
+from dartboard.prices import Bar, KisError
 from dartboard.scoring import kst_date, score_due, window_return
 
 MON, TUE, WED, THU, FRI = (date(2026, 1, d) for d in (5, 6, 7, 8, 9))
@@ -64,3 +64,21 @@ def test_score_due_uses_the_market_benchmark_and_keeps_missing_prices_due():
     assert [row[0] for row in ledger.due(FRI.isoformat())] == [halted]  # retried on the next run
     rep = ledger.report()
     assert rep.scored == 2 and rep.hit_rate == 1.0  # buy beat KOSPI, sell lagged KOSDAQ
+
+
+class FlakyPrices(FakePrices):
+    def daily(self, code, start, end, index=False):
+        if code == "000660":
+            raise KisError("EGW00201 초당 거래건수를 초과하였습니다.")
+        return super().daily(code, start, end, index)
+
+
+def test_one_failed_price_call_does_not_stop_the_other_forecasts():
+    ledger = Ledger(clock=lambda: "2026-01-05T01:00:00+00:00")
+    failing = ledger.append("000660", "buy", 0.7, 3, "r", [], "m", market="Y")
+    fine = ledger.append("005930", "buy", 0.7, 3, "r", [], "m", market="Y")
+    prices = FlakyPrices({"005930": rising(100, 10), "0001": rising(1000, 50)})
+    results = {r.forecast_id: r for r in score_due(ledger, prices, FRI)}
+
+    assert results[fine].scored and not results[failing].scored
+    assert [row[0] for row in ledger.due(FRI.isoformat())] == [failing]  # tried again on the next run

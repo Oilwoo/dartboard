@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 KST = ZoneInfo("Asia/Seoul")
 DOMAINS = {"real": "https://openapi.koreainvestment.com:9443", "demo": "https://openapivts.koreainvestment.com:29443"}
-SLEEP_S = {"real": 0.05, "demo": 0.5}  # the pace the official samples keep between calls
+SLEEP_S = {"real": 0.4, "demo": 1.1}  # under KIS limits (2026-04-20 notice): 모의 1/s, a new real key 3/s for 3 days
 STOCK = ("/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", "FHKST03010100")
 INDEX = ("/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice", "FHKUP03500100")
 BENCHMARK = {"Y": "0001", "K": "1001"}  # OpenDART corp_cls -> KOSPI / KOSDAQ composite index

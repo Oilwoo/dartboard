@@ -5,12 +5,15 @@ market hours must not be scored with prices it may already have seen.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Protocol
 
 from .ledger import Ledger
 from .prices import BENCHMARK, KST, Bar
+
+log = logging.getLogger(__name__)
 
 MAX_GAP_DAYS = 10  # a longer gap before the exit date means a halt or delisting: leave it for a human
 
@@ -48,8 +51,14 @@ def score_due(ledger: Ledger, prices: PriceSource, today: date) -> list[ScoreRes
     for fid, ticker, market, created_at, horizon in ledger.due(today.isoformat()):
         made_on = kst_date(created_at)
         end = made_on + timedelta(days=horizon)
-        stock = window_return(prices.daily(ticker, made_on, end), made_on, horizon)
-        bench = window_return(prices.daily(BENCHMARK.get(market, "0001"), made_on, end, index=True), made_on, horizon)
+        try:
+            stock = window_return(prices.daily(ticker, made_on, end), made_on, horizon)
+            bench = window_return(prices.daily(BENCHMARK.get(market, "0001"), made_on, end, index=True),
+                                  made_on, horizon)
+        except Exception:
+            # one failed price call (rate limit, network) must not stop the other forecasts
+            log.exception("prices for forecast %s (%s) failed; it stays due", fid, ticker)
+            stock = bench = None
         r = ScoreResult(fid, ticker, stock, bench)
         if r.scored:
             ledger.score(fid, stock, bench)
