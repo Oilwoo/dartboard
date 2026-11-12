@@ -9,15 +9,15 @@ from .faithfulness import FaithfulnessReport
 
 
 def alert_embed(corp_name: str, report_nm: str, summary: str, faith: FaithfulnessReport,
-                stance: str | None, rcept_no: str) -> discord.Embed:
+                p_up: float | None, rcept_no: str) -> discord.Embed:
     color = discord.Color.green() if faith.score == 1.0 else discord.Color.orange()
     e = discord.Embed(title=f"{corp_name} · {report_nm}", description=summary[:4000], color=color,
                       url=f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}")
     e.add_field(name="숫자 검증", value=f"{faith.supported}/{faith.checked} 원문과 일치", inline=True)
     if faith.unsupported:
         e.add_field(name="원문에서 못 찾은 숫자", value=", ".join(faith.unsupported)[:1000], inline=False)
-    if stance:
-        e.add_field(name="의견 (성적표에 기록됨)", value=stance, inline=True)
+    if p_up is not None:
+        e.add_field(name="5거래일 안에 기준 지수보다 더 오를 확률", value=f"{p_up:.0%}", inline=True)
     return e
 
 

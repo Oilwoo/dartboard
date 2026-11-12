@@ -23,6 +23,8 @@ class Settings:
     poll_minutes: int = 10
     review_timeout_s: int = 1800
     summary_max_chars: int = 12000
+    llm_order: str = "local,groq,gemini"   # watchlist filings: any provider, in this order
+    universe_llm_order: str = "local"      # the rest of the market: free-tier limits are too small for it
 
 
 def load_dotenv(path: str = ".env", env: dict | None = None) -> None:
@@ -70,4 +72,6 @@ def load(env: dict | None = None, watchlist_path: str = "watchlist.yaml") -> Set
         poll_minutes=int(env.get("POLL_MINUTES", "10")),
         review_timeout_s=int(env.get("REVIEW_TIMEOUT_S", "1800")),
         summary_max_chars=int(env.get("SUMMARY_MAX_CHARS", "12000")),
+        llm_order=env.get("LLM_ORDER", "local,groq,gemini"),
+        universe_llm_order=env.get("UNIVERSE_LLM_ORDER", "local"),
     )

@@ -39,6 +39,8 @@ def test_example_watchlist_loads():
 def test_settings_from_environment():
     cfg = load(dict(ENV, KIS_APP_KEY="k", POLL_MINUTES="5"), watchlist_path=EXAMPLE)
     assert (cfg.channel_id, cfg.approver_id, cfg.poll_minutes, cfg.kis_key, cfg.kis_env) == (123, 456, 5, "k", "real")
+    # the rest of the market goes only to the home PC's model unless UNIVERSE_LLM_ORDER says otherwise
+    assert (cfg.llm_order, cfg.universe_llm_order) == ("local,groq,gemini", "local")
 
 
 def test_missing_settings_are_named():

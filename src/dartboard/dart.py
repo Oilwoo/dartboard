@@ -34,18 +34,7 @@ class Disclosure:
     stock_code: str
     report_nm: str
     corp_cls: str = ""  # Y KOSPI, K KOSDAQ, N KONEX, E other
-
-
-# Insider-ownership reports are about 90% of filings, and periodic reports lose their numbers to truncation.
-ROUTINE_REPORTS = ("임원주요주주특정증권등소유상황보고서", "사업보고서", "반기보고서", "분기보고서")
-_PREFIXES = re.compile(r"^(\s*\[[^\]]*\])+")  # [기재정정], [첨부추가] and the like
-_SPACES_AND_DOTS = re.compile(r"[\sㆍ·・]")
-
-
-def is_routine(report_nm: str) -> bool:
-    """True for insider-ownership reports and periodic reports, corrections included."""
-    name = _SPACES_AND_DOTS.sub("", _PREFIXES.sub("", report_nm))
-    return name.startswith(ROUTINE_REPORTS)
+    filing_type: str = ""  # OpenDART pblntf_detail_ty asked for, e.g. B001; the list itself does not say
 
 
 def _download(url: str) -> bytes:
@@ -54,7 +43,8 @@ def _download(url: str) -> bytes:
 
 
 def list_disclosures(api_key: str, bgn: date, end: date, corp_code: str | None = None,
-                     fetch: Fetch = _download) -> list[Disclosure]:
+                     filing_type: str | None = None, fetch: Fetch = _download) -> list[Disclosure]:
+    """Filings received from bgn to end. filing_type is an OpenDART detail type such as B001."""
     if corp_code is None and (end - bgn).days > 92:
         raise ValueError("OpenDART limits searches without corp_code to 3 months; split the range")
     out, page = [], 1
@@ -63,6 +53,8 @@ def list_disclosures(api_key: str, bgn: date, end: date, corp_code: str | None =
                   "page_no": page, "page_count": 100}
         if corp_code:
             params["corp_code"] = corp_code
+        if filing_type:
+            params["pblntf_detail_ty"] = filing_type
         data = json.loads(fetch(f"{BASE}/list.json?{urllib.parse.urlencode(params)}"))
         status = data.get("status")
         if status == "013":  # nothing filed in the range
@@ -72,7 +64,8 @@ def list_disclosures(api_key: str, bgn: date, end: date, corp_code: str | None =
         if status != "000":
             raise DartError(f"{status}: {data.get('message')}")
         out += [Disclosure(r["rcept_no"], r["rcept_dt"], r["corp_code"], r["corp_name"],
-                           (r.get("stock_code") or "").strip(), r["report_nm"], r.get("corp_cls", ""))
+                           (r.get("stock_code") or "").strip(), r["report_nm"], r.get("corp_cls", ""),
+                           filing_type or "")
                 for r in data.get("list", [])]
         if page >= int(data.get("total_page", 1)):
             return out

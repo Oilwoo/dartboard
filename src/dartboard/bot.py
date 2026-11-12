@@ -1,4 +1,4 @@
-"""Discord runtime: polls DART, asks for decisions with buttons, and posts daily scores.
+"""Discord runtime: polls DART, asks for decisions with buttons, scores daily and posts the ledger's head hash.
 
 Run `python -m dartboard` in a folder with .env and watchlist.yaml.
 """
@@ -16,37 +16,36 @@ from discord import app_commands
 from discord.ext import tasks
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from . import llm
 from .config import Settings, load, load_dotenv
 from .discord_bot import alert_embed, ask_approval
 from .faithfulness import FaithfulnessReport
-from .graph import State
-from .ledger import Ledger, Report
-from .pipeline import Pipeline, SeenStore, llm_summarizer
+from .graph import Answer, State
+from .ledger import Ledger
+from .pipeline import INSTRUCTIONS, Pipeline, SeenStore, llm_answerer
 from .prices import Kis
-from .scoring import score_due
+from .report import format_scorecard, scorecard
+from .scoring import ScoreRun, score_due
 
 KST = ZoneInfo("Asia/Seoul")
-CATCH_UP_DAYS = 3  # the day's first poll looks back over weekends, late filings and downtime
+CATCH_UP_DAYS = 3  # every poll looks back this far: weekends, late filings, and a backlog left while the PC was off
 log = logging.getLogger("dartboard")
-
-
-def format_report(r: Report) -> str:
-    if r.scored == 0:
-        return "아직 채점된 의견이 없습니다."
-
-    def pct(x):
-        return "-" if x is None else f"{x * 100:+.1f}%p"
-
-    return (f"채점 {r.scored}건 · 적중률 {r.hit_rate * 100:.0f}% · Brier {r.brier:.3f} (0.25면 동전 던지기 수준)\n"
-            f"매수 의견 평균 초과수익 {pct(r.mean_excess_buy)} · 매도 의견 평균 {pct(r.mean_excess_sell)}")
 
 
 def is_market_window(now: datetime) -> bool:
     return now.weekday() < 5 and 7 <= now.hour < 21
 
 
-def poll_start(today: date, last_polled: date | None) -> date:
-    return today if last_polled == today else today - timedelta(days=CATCH_UP_DAYS)
+def poll_start(today: date) -> date:
+    return today - timedelta(days=CATCH_UP_DAYS)
+
+
+def daily_check_text(today: date, broken_at: int | None, count: int, head: str, run: ScoreRun | None) -> str:
+    chain = "해시 체인 이상 없음" if broken_at is None else f"경고: {broken_at}번 기록부터 해시 체인이 맞지 않습니다"
+    lines = [f"성적표 점검 {today.isoformat()} · {chain} · 기록 {count}개", f"끝 해시 `{head}`"]
+    if run is not None:
+        lines.append(f"오늘 채점 기록 {run.recorded}건 · 기간이 남은 예측 {run.waiting}건 · 주가 조회 실패 {run.failed}건")
+    return "\n".join(lines)
 
 
 class DartboardBot(discord.Client):
@@ -55,29 +54,34 @@ class DartboardBot(discord.Client):
         self.cfg = cfg
         self.tree = app_commands.CommandTree(self)
         self._channel: discord.abc.Messageable | None = None
-        self._last_polled: date | None = None
 
     async def setup_hook(self) -> None:
         os.makedirs(self.cfg.data_dir, exist_ok=True)
         self._saver_cm = AsyncSqliteSaver.from_conn_string(os.path.join(self.cfg.data_dir, "checkpoints.db"))
         saver = await self._saver_cm.__aenter__()
         self.ledger = Ledger(os.path.join(self.cfg.data_dir, "ledger.db"))
+        watchlist_agent = llm.build_agent(Answer, INSTRUCTIONS, self.cfg.llm_order)
+        universe_agent = llm.build_agent(Answer, INSTRUCTIONS, self.cfg.universe_llm_order)
+        if universe_agent is None:
+            log.warning("no model configured for UNIVERSE_LLM_ORDER=%s: only watchlist filings are judged",
+                        self.cfg.universe_llm_order)
         self.pipeline = Pipeline(
             dart_key=self.cfg.dart_key, watchlist=self.cfg.watchlist, ledger=self.ledger,
             seen=SeenStore(os.path.join(self.cfg.data_dir, "state.db")),
-            summarize=llm_summarizer(self.cfg.summary_max_chars), notify=self.notify, approve=self.approve,
-            checkpointer=saver)
+            answer=llm_answerer(watchlist_agent, universe_agent, self.cfg.summary_max_chars),
+            notify=self.notify, approve=self.approve, checkpointer=saver, judge_universe=universe_agent is not None)
         self.kis = (Kis(self.cfg.kis_key, self.cfg.kis_secret, self.cfg.kis_env,
                         os.path.join(self.cfg.data_dir, "kis_token.json")) if self.cfg.kis_key else None)
 
         @self.tree.command(name="report", description="예측 성적표 요약")
         async def report(interaction: discord.Interaction) -> None:
-            await interaction.response.send_message(format_report(self.ledger.report()))
+            text = await asyncio.to_thread(lambda: format_scorecard(scorecard(self.ledger)))
+            await interaction.response.send_message(text[:2000])
 
         await self.tree.sync()
         self.poll.change_interval(minutes=self.cfg.poll_minutes)
         self.poll.start()
-        self.daily_score.start()
+        self.daily_check.start()
 
     async def on_ready(self) -> None:
         picked = await self.pipeline.resume_pending()  # safe to repeat, so reconnects are harmless
@@ -95,19 +99,21 @@ class DartboardBot(discord.Client):
         return self._channel
 
     async def notify(self, s: State) -> None:
-        r = s.get("result") or {}
+        a = s.get("answer")
         faith = FaithfulnessReport(s.get("faith_checked", 0), s.get("faith_supported", 0), list(s.get("unsupported") or []))
-        stance = r.get("stance") if s.get("forecast_id") else None
-        summary = r.get("summary") or "요약에 실패했습니다. 원문 링크를 확인하세요."
-        embed = alert_embed(s["corp_name"], s["report_nm"], summary, faith, stance, s["rcept_no"])
+        summary = a["summary"] if a else "AI가 형식에 맞는 답을 내지 못했습니다(실패로 기록). 원문 링크를 확인하세요."
+        embed = alert_embed(s["corp_name"], s["report_nm"], summary, faith, a["p_up"] if a else None, s["rcept_no"])
+        if s.get("kind") == "follow_up":
+            embed.set_footer(text="정정·철회 같은 후속 공시: 기록하지만 공식 채점에는 넣지 않습니다.")
         await (await self.channel()).send(embed=embed)
 
     async def approve(self, q: dict) -> bool:
         faith = FaithfulnessReport(q.get("checked", 0), q.get("supported", 0), list(q.get("unsupported") or []))
-        embed = alert_embed(q.get("corp_name", ""), q.get("report_nm", ""), q.get("summary") or "요약 실패",
-                            faith, None, q["rcept_no"])
-        text = (f"**검토 요청** · 요약에 원문에서 찾지 못한 숫자가 있습니다. 의견: `{q.get('stance', 'none')}`\n"
-                f"승인하면 성적표에 기록합니다. {self.cfg.review_timeout_s // 60}분 안에 응답이 없으면 기록하지 않습니다.")
+        embed = alert_embed(q.get("corp_name", ""), q.get("report_nm", ""), q.get("summary", ""), faith,
+                            q.get("p_up"), q["rcept_no"])
+        text = ("**요약 확인 요청** · 요약에 원문에서 찾지 못한 숫자가 있습니다.\n"
+                "판단은 이미 성적표에 기록됐고, 승인·거절은 사람 결정으로 따로 남습니다. "
+                f"{self.cfg.review_timeout_s // 60}분 안에 응답이 없으면 거절로 남습니다.")
         return await ask_approval(await self.channel(), self.cfg.approver_id, text, self.cfg.review_timeout_s, embed)
 
     @tasks.loop(minutes=10)
@@ -116,8 +122,7 @@ class DartboardBot(discord.Client):
         if not is_market_window(now):
             return
         try:
-            await self.pipeline.run_once(now.date(), since=poll_start(now.date(), self._last_polled))
-            self._last_polled = now.date()
+            await self.pipeline.run_once(now.date(), since=poll_start(now.date()))
         except Exception:
             log.exception("poll failed")
 
@@ -126,22 +131,22 @@ class DartboardBot(discord.Client):
         await self.wait_until_ready()
 
     @tasks.loop(time=dtime(18, 30, tzinfo=KST))
-    async def daily_score(self) -> None:
-        if self.kis is None:
-            return
-        try:
-            results = await asyncio.to_thread(score_due, self.ledger, self.kis, datetime.now(KST).date())
-        except Exception:
-            log.exception("scoring failed")
-            return
-        if results:
-            done = sum(r.scored for r in results)
-            await (await self.channel()).send(
-                f"오늘 채점 {done}건 · 주가 확인이 안 돼 다음에 다시 볼 의견 {len(results) - done}건\n"
-                + format_report(self.ledger.report()))
+    async def daily_check(self) -> None:
+        today = datetime.now(KST).date()
+        run = None
+        if self.kis is not None:
+            try:
+                run = await asyncio.to_thread(score_due, self.ledger, self.kis, today)
+            except Exception:
+                log.exception("scoring failed")
+        broken_at = await asyncio.to_thread(self.ledger.verify_chain)
+        count, head = self.ledger.head()
+        text = daily_check_text(today, broken_at, count, head, run)
+        text += "\n" + await asyncio.to_thread(lambda: format_scorecard(scorecard(self.ledger)))
+        await (await self.channel()).send(text[:2000])
 
-    @daily_score.before_loop
-    async def _score_waits_for_ready(self) -> None:
+    @daily_check.before_loop
+    async def _check_waits_for_ready(self) -> None:
         await self.wait_until_ready()
 
 
@@ -149,4 +154,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     load_dotenv()
     cfg = load()
+    if not llm.configured(cfg.llm_order):
+        raise SystemExit(f"no model configured for LLM_ORDER={cfg.llm_order}: "
+                         "set the URL and MODEL of at least one provider in .env")
     DartboardBot(cfg).run(cfg.discord_token, log_handler=None)

@@ -3,7 +3,7 @@ from datetime import date
 
 import pytest
 
-from dartboard.dart import RateLimited, is_routine, list_disclosures
+from dartboard.dart import RateLimited, list_disclosures
 
 ROW = {"rcept_no": "20261103000247", "rcept_dt": "20261103", "corp_code": "00126380", "corp_name": "테스트전자",
        "stock_code": "005930", "report_nm": "주요사항보고서(자기주식취득결정)"}
@@ -49,27 +49,8 @@ def test_long_range_with_corp_code_is_allowed():
     assert "corp_code=00126380" in calls[0]
 
 
-# Names as OpenDART writes them (the dot is U+318D), plus spellings a person might type.
-@pytest.mark.parametrize("name", [
-    "임원ㆍ주요주주특정증권등소유상황보고서",
-    "[기재정정]임원ㆍ주요주주특정증권등소유상황보고서",
-    "임원·주요주주 특정증권등 소유상황보고서",
-    "사업보고서 (2025.12)",
-    "반기보고서 (2026.06)",
-    "분기보고서 (2026.09)",
-    "[기재정정][첨부추가]분기보고서 (2026.03)",
-])
-def test_routine_filings_are_recognised(name):
-    assert is_routine(name)
-
-
-@pytest.mark.parametrize("name", [
-    "주요사항보고서(자기주식취득결정)",
-    "[기재정정]주요사항보고서(유상증자결정)",
-    "연결재무제표기준영업(잠정)실적(공정공시)",
-    "임원ㆍ주요주주특정증권등거래계획보고서",
-    "주식등의대량보유상황보고서(일반)",
-    "증권발행실적보고서",
-])
-def test_decisions_and_other_reports_are_not_routine(name):
-    assert not is_routine(name)
+def test_filing_type_is_asked_for_and_kept_on_each_filing():
+    fetch, calls = pages({"status": "000", "total_page": 1, "list": [dict(ROW, corp_cls="Y")]})
+    out = list_disclosures("k", date(2026, 11, 3), date(2026, 11, 3), filing_type="B001", fetch=fetch)
+    assert "pblntf_detail_ty=B001" in calls[0]
+    assert (out[0].filing_type, out[0].corp_cls) == ("B001", "Y")

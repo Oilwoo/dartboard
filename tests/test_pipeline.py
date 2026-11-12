@@ -1,34 +1,39 @@
-"""The Stage 1 pipeline end to end, with fake DART, LLM and Discord."""
+"""The pipeline end to end, with fake DART, LLM and Discord."""
 import asyncio
 from datetime import date
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from dartboard import llm, pipeline
 from dartboard.dart import Disclosure, RateLimited
-from dartboard.graph import FilingSummary
+from dartboard.graph import Answer
 from dartboard.ledger import Ledger
-from dartboard.pipeline import Pipeline, SeenStore
+from dartboard.pipeline import PROMPT_VERSION, Pipeline, SeenStore
 
 SOURCE = "취득예정주식수 : 1,250,000주, 발행주식총수 대비 비율 : 2.3%"
 FAITHFUL = "1,250,000주(발행주식의 2.3%)를 취득합니다."
 UNFAITHFUL = "발행주식의 3.2%를 취득합니다."
 DAY = date(2026, 11, 3)
+WATCHED, OTHER = "005930", "000020"
 
 
-def filing(rcept_no, stock_code="005930", corp_cls="Y", report_nm="자기주식취득결정"):
-    return Disclosure(rcept_no, "20261103", "00126380", "테스트전자", stock_code, report_nm, corp_cls)
+def filing(rcept_no, stock_code=WATCHED, report_nm="주요사항보고서(자기주식취득결정)", filing_type="B001",
+           corp_cls="Y", corp_name="테스트전자"):
+    return Disclosure(rcept_no, "20261103", "00126380", corp_name, stock_code, report_nm, corp_cls, filing_type)
 
 
-def make(*, summaries=None, filings=None, approve=None, notify=None, doc_fn=None,
-         checkpointer=None, ledger=None, seen=None):
-    log = {"notified": [], "questions": [], "docs": []}
-    summaries = summaries or {}
+def make(*, answers=None, filings=None, approve=None, notify=None, doc_fn=None, checkpointer=None, ledger=None,
+         seen=None, judge_universe=True):
+    log = {"notified": [], "questions": [], "docs": [], "answered": [], "listed": []}
+    answers = answers or {}
 
-    async def summarize(state):
-        text = summaries.get(state["rcept_no"], FAITHFUL)
-        return None if text is None else (FilingSummary(summary=text, stance="buy", confidence=0.6, horizon_days=20),
-                                          "qwen-test")
+    async def answer(state):
+        log["answered"].append(state["rcept_no"])
+        a = answers.get(state["rcept_no"], FAITHFUL)
+        if isinstance(a, Exception):
+            raise a
+        return None if a is None else (Answer(summary=a, p_up=0.6), "qwen-test")
 
     async def default_notify(state):
         log["notified"].append(state["rcept_no"])
@@ -41,52 +46,46 @@ def make(*, summaries=None, filings=None, approve=None, notify=None, doc_fn=None
         log["docs"].append(rcept_no)
         return SOURCE
 
-    p = Pipeline(dart_key="key", watchlist={"005930": "테스트전자", "035720": "카카오"},
-                 ledger=ledger if ledger is not None else Ledger(), seen=seen or SeenStore(),
-                 summarize=summarize, notify=notify or default_notify, approve=approve or default_approve,
-                 checkpointer=checkpointer or InMemorySaver(),
-                 list_fn=lambda key, bgn, end: list(filings if filings is not None else [filing("A1")]),
-                 doc_fn=doc_fn or default_doc)
+    def list_fn(key, bgn, end, filing_type=None):
+        log["listed"].append(filing_type)
+        return [d for d in (filings if filings is not None else [filing("A1")]) if d.filing_type == filing_type]
+
+    p = Pipeline(dart_key="key", watchlist={WATCHED: "테스트전자"}, ledger=ledger if ledger is not None else Ledger(),
+                 seen=seen or SeenStore(), answer=answer, notify=notify or default_notify,
+                 approve=approve or default_approve, checkpointer=checkpointer or InMemorySaver(),
+                 judge_universe=judge_universe, list_fn=list_fn, doc_fn=doc_fn or default_doc)
     return p, log
 
 
-def test_watchlist_filing_is_recorded_once_and_others_are_ignored():
+def test_watchlist_goes_to_discord_universe_is_recorded_and_the_rest_is_skipped():
     ledger = Ledger()
+    filings = [filing("A1"),
+               filing("B1", OTHER, filing_type="I002", report_nm="영업(잠정)실적(공정공시)"),
+               filing("C1", OTHER, filing_type="I001", report_nm="기업설명회(IR)개최"),
+               filing("D1", OTHER, corp_cls="N"),
+               filing("E1", OTHER, corp_name="에이스팩1호")]
 
     async def go():
-        p, log = make(filings=[filing("A1"), filing("B1", stock_code="000000"), filing("K1", "035720", "K")],
-                      ledger=ledger)
-        assert await p.run_once(DAY) == ["A1", "K1"]
+        p, log = make(filings=filings, ledger=ledger)
+        assert await p.run_once(DAY) == ["A1", "B1"]
         assert await p.run_once(DAY) == []  # already handled
         return p, log
 
     p, log = asyncio.run(go())
-    assert log["notified"] == ["A1", "K1"] and log["docs"] == ["A1", "K1"]
-    assert p.seen.status("A1") == "auto" and p.seen.status("B1") is None
-    assert [(row[1], row[2]) for row in ledger.due("2030-01-01")] == [("005930", "Y"), ("035720", "K")]
+    assert log["listed"][:3] == ["B001", "I001", "I002"]
+    assert log["notified"] == ["A1"] and log["docs"] == ["A1", "B1"]
+    routes = {j.rcept_no: (j.route, j.filing_type, j.prompt_version) for _, j in ledger.judgments()}
+    assert routes == {"A1": ("watchlist", "B001", PROMPT_VERSION), "B1": ("universe", "I002", PROMPT_VERSION)}
+    assert [p.seen.status(r) for r in ("C1", "D1", "E1")] == ["admin", "out_of_scope", "out_of_scope"]
 
 
-def test_routine_filings_are_skipped_without_reading_or_recording_them(caplog):
+def test_follow_up_is_judged_and_linked_but_marked_as_follow_up():
     ledger = Ledger()
-    filings = [filing("A1"),
-               filing("R1", report_nm="임원ㆍ주요주주특정증권등소유상황보고서"),
-               filing("R2", report_nm="[기재정정]분기보고서 (2026.09)"),
-               filing("R3", stock_code="000000", report_nm="사업보고서 (2025.12)")]
-
-    async def go():
-        p, log = make(filings=filings, ledger=ledger)
-        with caplog.at_level("INFO", logger="dartboard.pipeline"):
-            assert await p.run_once(DAY) == ["A1"]
-            assert await p.run_once(DAY) == []  # skipped filings are not counted again
-        return p, log
-
-    p, log = asyncio.run(go())
-    assert log["docs"] == ["A1"] and log["notified"] == ["A1"]
-    assert p.seen.status("R1") == p.seen.status("R2") == "skipped"
-    assert p.seen.status("R3") is None  # not on the watchlist, so not even marked
-    assert len(ledger.due("2030-01-01")) == 1
-    skips = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage()]
-    assert skips == ["skipped 2 routine watchlist filings (insider ownership, periodic reports)"]
+    filings = [filing("20261103000001"), filing("20261103000002", report_nm="[기재정정]주요사항보고서(자기주식취득결정)")]
+    p, _ = make(filings=filings, ledger=ledger)
+    asyncio.run(p.run_once(DAY))
+    follow = ledger.judgments()[1][1]
+    assert (follow.kind, follow.linked_rcept_no) == ("follow_up", "20261103000001")
 
 
 def test_question_waits_in_the_background_while_other_filings_move_on():
@@ -100,7 +99,7 @@ def test_question_waits_in_the_background_while_other_filings_move_on():
             await gate.wait()
             return True
 
-        p, log = make(summaries={"A1": UNFAITHFUL}, filings=[filing("A1"), filing("A2")], approve=approve,
+        p, log = make(answers={"A1": UNFAITHFUL}, filings=[filing("A1"), filing("A2")], approve=approve,
                       ledger=ledger)
         assert await p.run_once(DAY) == ["A1", "A2"]
         await asyncio.sleep(0)
@@ -113,9 +112,8 @@ def test_question_waits_in_the_background_while_other_filings_move_on():
     p, log, questions = asyncio.run(go())
     assert p.seen.status("A1") == "keep" and log["notified"] == ["A2", "A1"]
     q = questions[0]
-    assert (q["corp_name"], q["summary"], q["unsupported"]) == ("테스트전자", UNFAITHFUL, ["3.2%"])
-    assert (q["checked"], q["supported"]) == (1, 0)
-    assert len(ledger.due("2030-01-01")) == 2
+    assert (q["corp_name"], q["summary"], q["unsupported"], q["p_up"]) == ("테스트전자", UNFAITHFUL, ["3.2%"], 0.6)
+    assert len(ledger.judgments()) == 2 and list(ledger.reviews().values()) == ["keep"]
 
 
 def test_restart_while_waiting_asks_again_and_continues_from_the_checkpoint(tmp_path):
@@ -129,7 +127,7 @@ def test_restart_while_waiting_asks_again_and_continues_from_the_checkpoint(tmp_
             return True
 
         async with AsyncSqliteSaver.from_conn_string(files["checkpoints"]) as saver:
-            p, _ = make(summaries={"A1": UNFAITHFUL}, approve=approve, checkpointer=saver,
+            p, _ = make(answers={"A1": UNFAITHFUL}, approve=approve, checkpointer=saver,
                         ledger=Ledger(files["ledger"]), seen=SeenStore(files["state"]))
             await p.run_once(DAY)
             assert p.seen.status("A1") == "pending"
@@ -145,7 +143,7 @@ def test_restart_while_waiting_asks_again_and_continues_from_the_checkpoint(tmp_
             return False
 
         def no_download(key, rcept_no):
-            raise AssertionError("the filing must not be downloaded or summarized again")
+            raise AssertionError("the filing must not be downloaded or judged again")
 
         async with AsyncSqliteSaver.from_conn_string(files["checkpoints"]) as saver:
             p, log = make(approve=approve, doc_fn=no_download, checkpointer=saver,
@@ -157,11 +155,13 @@ def test_restart_while_waiting_asks_again_and_continues_from_the_checkpoint(tmp_
     asyncio.run(first_process())
     asked, log = asyncio.run(second_process())
     assert asked[0]["rcept_no"] == "A1" and asked[0]["summary"] == UNFAITHFUL
-    assert SeenStore(files["state"]).status("A1") == "discard"
-    assert Ledger(files["ledger"]).due("2030-01-01") == [] and log["notified"] == ["A1"]
+    assert SeenStore(files["state"]).status("A1") == "discard" and log["answered"] == []
+    ledger = Ledger(files["ledger"])
+    assert len(ledger.judgments()) == 1 and list(ledger.reviews().values()) == ["discard"]
+    assert ledger.verify_chain() is None
 
 
-def test_failed_notification_is_retried_without_a_second_ledger_row():
+def test_failed_notification_is_retried_without_a_second_ledger_entry():
     ledger, attempts = Ledger(), []
 
     async def flaky_notify(state):
@@ -177,8 +177,8 @@ def test_failed_notification_is_retried_without_a_second_ledger_row():
         return p, log
 
     p, log = asyncio.run(go())
-    assert attempts == ["A1", "A1"] and log["docs"] == ["A1"]
-    assert len(ledger.due("2030-01-01")) == 1 and ledger.verify_chain() is None
+    assert attempts == ["A1", "A1"] and log["docs"] == ["A1"] and log["answered"] == ["A1"]
+    assert len(ledger.judgments()) == 1 and ledger.verify_chain() is None
 
 
 def test_failed_question_stays_pending_and_is_asked_again():
@@ -191,7 +191,7 @@ def test_failed_question_stays_pending_and_is_asked_again():
         return True
 
     async def go():
-        p, _ = make(summaries={"A1": UNFAITHFUL}, approve=approve)
+        p, _ = make(answers={"A1": UNFAITHFUL}, approve=approve)
         await p.run_once(DAY)
         await p.drain()
         assert p.seen.status("A1") == "pending"
@@ -220,19 +220,45 @@ def test_rate_limit_stops_the_run_and_the_filings_are_retried_later():
     assert asyncio.run(go()) == ["A1", "A2"]
 
 
-def test_when_every_model_fails_the_human_decides_from_the_original():
+def test_a_failed_answer_is_recorded_and_shown_without_asking_anyone():
+    ledger = Ledger()
+    p, log = make(answers={"A1": None}, ledger=ledger)
+    asyncio.run(p.run_once(DAY))
+    [(_, j)] = ledger.judgments()
+    assert j.status == "failed" and log["questions"] == [] and log["notified"] == ["A1"]
+    assert p.seen.status("A1") == "auto"
+
+
+def test_unreachable_model_stops_the_route_and_resumes_later_without_downloading_again():
+    ledger = Ledger()
+    others = [filing(f"U{i}", OTHER) for i in range(3)]
+    answers = {f"U{i}": llm.Unavailable("PC off") for i in range(3)}
+
     async def go():
-        questions = []
+        p, log = make(filings=[filing("A1")] + others, answers=answers, ledger=ledger)
+        assert await p.run_once(DAY) == ["A1"]             # the watchlist went ahead
+        assert log["answered"] == ["A1", "U0"]               # the universe stopped at the first failure
+        assert p.seen.status("U0") is None
+        answers.clear()                                       # the PC is back
+        assert await p.run_once(DAY) == ["U0", "U1", "U2"]
+        return log
 
-        async def approve(q):
-            questions.append(q)
-            return False
+    log = asyncio.run(go())
+    assert log["docs"] == ["A1", "U0", "U1", "U2"]           # U0 continued from its checkpoint
+    assert len(ledger.judgments()) == 4
 
-        p, log = make(summaries={"A1": None}, approve=approve)
-        await p.run_once(DAY)
-        await p.drain()
-        return p, log, questions
 
-    p, log, questions = asyncio.run(go())
-    assert questions[0]["unsupported"] == ["요약 실패"] and questions[0]["summary"] == ""
-    assert p.seen.status("A1") == "discard" and log["notified"] == ["A1"]
+def test_universe_is_judged_in_small_batches(monkeypatch):
+    monkeypatch.setattr(pipeline, "UNIVERSE_PER_RUN", 2)
+    p, log = make(filings=[filing(f"U{i}", OTHER) for i in range(5)])
+
+    async def go():
+        return [await p.run_once(DAY) for _ in range(3)]
+
+    assert asyncio.run(go()) == [["U0", "U1"], ["U2", "U3"], ["U4"]]
+
+
+def test_universe_off_leaves_other_companies_untouched():
+    p, log = make(filings=[filing("A1"), filing("U1", OTHER)], judge_universe=False)
+    assert asyncio.run(p.run_once(DAY)) == ["A1"]
+    assert p.seen.status("U1") is None and log["docs"] == ["A1"]
