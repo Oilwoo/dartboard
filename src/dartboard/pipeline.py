@@ -15,7 +15,7 @@ from typing import Awaitable, Callable
 from langgraph.types import Command
 
 from . import llm
-from .dart import Disclosure, RateLimited, fetch_document, list_disclosures
+from .dart import Disclosure, RateLimited, fetch_document, is_routine, list_disclosures
 from .graph import FilingSummary, Notifier, State, Summarizer, build
 from .ledger import Ledger
 
@@ -81,12 +81,17 @@ class Pipeline:
 
     async def run_once(self, day: date, since: date | None = None) -> list[str]:
         """Handles new watchlist filings received from `since` (default `day`) to `day`.
-        Returns the receipt numbers it handled; a filing that fails is tried again on the next run."""
+        Returns the receipt numbers it handled; a filing that fails is tried again on the next run.
+        Routine filings are marked 'skipped' without reading them, so each one is counted once."""
         await self.resume_pending()
         filings = await asyncio.to_thread(self.list_fn, self.dart_key, since or day, day)
-        handled = []
+        handled, skipped = [], 0
         for d in filings:
             if d.stock_code not in self.watchlist or self.seen.status(d.rcept_no):
+                continue
+            if is_routine(d.report_nm):
+                self.seen.mark(d.rcept_no, "skipped")
+                skipped += 1
                 continue
             try:
                 await self._advance(d.rcept_no, lambda d=d: self._first_input(d))
@@ -97,6 +102,8 @@ class Pipeline:
                 log.exception("filing %s failed; it will be tried again on the next run", d.rcept_no)
                 continue
             handled.append(d.rcept_no)
+        if skipped:
+            log.info("skipped %d routine watchlist filings (insider ownership, periodic reports)", skipped)
         return handled
 
     async def resume_pending(self) -> int:

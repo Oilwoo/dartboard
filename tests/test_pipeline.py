@@ -16,8 +16,8 @@ UNFAITHFUL = "발행주식의 3.2%를 취득합니다."
 DAY = date(2026, 11, 3)
 
 
-def filing(rcept_no, stock_code="005930", corp_cls="Y"):
-    return Disclosure(rcept_no, "20261103", "00126380", "테스트전자", stock_code, "자기주식취득결정", corp_cls)
+def filing(rcept_no, stock_code="005930", corp_cls="Y", report_nm="자기주식취득결정"):
+    return Disclosure(rcept_no, "20261103", "00126380", "테스트전자", stock_code, report_nm, corp_cls)
 
 
 def make(*, summaries=None, filings=None, approve=None, notify=None, doc_fn=None,
@@ -64,6 +64,29 @@ def test_watchlist_filing_is_recorded_once_and_others_are_ignored():
     assert log["notified"] == ["A1", "K1"] and log["docs"] == ["A1", "K1"]
     assert p.seen.status("A1") == "auto" and p.seen.status("B1") is None
     assert [(row[1], row[2]) for row in ledger.due("2030-01-01")] == [("005930", "Y"), ("035720", "K")]
+
+
+def test_routine_filings_are_skipped_without_reading_or_recording_them(caplog):
+    ledger = Ledger()
+    filings = [filing("A1"),
+               filing("R1", report_nm="임원ㆍ주요주주특정증권등소유상황보고서"),
+               filing("R2", report_nm="[기재정정]분기보고서 (2026.09)"),
+               filing("R3", stock_code="000000", report_nm="사업보고서 (2025.12)")]
+
+    async def go():
+        p, log = make(filings=filings, ledger=ledger)
+        with caplog.at_level("INFO", logger="dartboard.pipeline"):
+            assert await p.run_once(DAY) == ["A1"]
+            assert await p.run_once(DAY) == []  # skipped filings are not counted again
+        return p, log
+
+    p, log = asyncio.run(go())
+    assert log["docs"] == ["A1"] and log["notified"] == ["A1"]
+    assert p.seen.status("R1") == p.seen.status("R2") == "skipped"
+    assert p.seen.status("R3") is None  # not on the watchlist, so not even marked
+    assert len(ledger.due("2030-01-01")) == 1
+    skips = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage()]
+    assert skips == ["skipped 2 routine watchlist filings (insider ownership, periodic reports)"]
 
 
 def test_question_waits_in_the_background_while_other_filings_move_on():

@@ -36,6 +36,18 @@ class Disclosure:
     corp_cls: str = ""  # Y KOSPI, K KOSDAQ, N KONEX, E other
 
 
+# Insider-ownership reports are about 90% of filings, and periodic reports lose their numbers to truncation.
+ROUTINE_REPORTS = ("임원주요주주특정증권등소유상황보고서", "사업보고서", "반기보고서", "분기보고서")
+_PREFIXES = re.compile(r"^(\s*\[[^\]]*\])+")  # [기재정정], [첨부추가] and the like
+_SPACES_AND_DOTS = re.compile(r"[\sㆍ·・]")
+
+
+def is_routine(report_nm: str) -> bool:
+    """True for insider-ownership reports and periodic reports, corrections included."""
+    name = _SPACES_AND_DOTS.sub("", _PREFIXES.sub("", report_nm))
+    return name.startswith(ROUTINE_REPORTS)
+
+
 def _download(url: str) -> bytes:
     with urllib.request.urlopen(url, timeout=60) as r:
         return r.read()
