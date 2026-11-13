@@ -1,0 +1,20 @@
+// Tailnet policy for dartboard (Tailscale admin console -> Access controls).
+// Replace the whole default policy (it allows every device to reach every other) with this file.
+// Intent: only the server reaches the home PC, and only on vLLM's port. Tailscale runs the tests below every
+// time the policy is saved and refuses to save it if they fail. After saving, also try from another device:
+// the docs did not say outright that grants alone switch off everything else.
+{
+  "tagOwners": {
+    "tag:server": ["autogroup:admin"],
+  },
+  "hosts": {
+    // replace with the PC's address from `tailscale ip -4` (personal devices are not tagged)
+    "home-pc": "100.101.102.103",
+  },
+  "grants": [
+    {"src": ["tag:server"], "dst": ["home-pc"], "ip": ["tcp:8000"]},
+  ],
+  "tests": [
+    {"src": "tag:server", "proto": "tcp", "accept": ["home-pc:8000"], "deny": ["home-pc:22", "home-pc:3389"]},
+  ],
+}

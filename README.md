@@ -42,6 +42,7 @@
 - [x] **0. 기반**: 정책 엔진, LLM 자동 전환, 성적표, 숫자 검증, LangGraph 1단계 흐름, Discord 알림·승인 (테스트 34개)
 - [x] **1. 봇 품질 보증**: 관심 종목 공시 감시, 공시 원문 수집(`document.xml`), KIS 수정주가로 자동 채점(다음 거래일 시가 진입, 시장 지수 대비), Discord 봇(`/report`), 재시작해도 승인 대기와 기록이 이어지는 체크포인트, 서버용 Docker (테스트 71개)
 - [x] **채점 설계 개편 (2026-11)**: 판단 대상 규칙, 시장 전체 종목군, 확률 예측, 키로 중복을 막는 새 성적표, KRX 정규장 가격과 거래일 기준 채점, 기준선·신뢰구간 리포트, 매일 해시 체인 점검 (테스트 156개)
+- [x] **운영 준비 (2026-11)**: 첫 실행 점검 명령, 하트비트, 매일 백업과 복원 검사, 지수 일봉과 휴장일 API 대조, 끝난 공시의 체크포인트 정리, 베이스 이미지·vLLM 버전 고정, GitHub Actions CI, 복구 연습 (테스트 186개)
 - [ ] **2. 보유 종목 악재 경보**: 감사보고서 지연, CB 리픽싱, 전환 주식 추가상장, 최대주주 지분 변동. PR-AUC·리드타임으로 평가
 - [ ] **3. 공시 유형별 기저율**: 자사주·CB·유상증자·감사 관련·내부자 매매 5개 유형의 과거 반응 분포
 - [ ] 연구 트랙: Lazy Prices 한국판 (사업보고서 문장 변화와 이후 수익률)
@@ -58,8 +59,9 @@
 → 사람 결정을 따로 기록 (30분 무응답 = 거절)
 → Discord 알림
         ↓
-매일 18:30   기간이 끝난 예측을 KRX 정규장 가격으로 채점 → 해시 체인 검사 → 끝 해시와 성적을 Discord에 게시
-             (/report로 언제든 조회)
+매일 18:30   기간이 끝난 예측을 KRX 정규장 가격으로 채점 → 거래일 대조 → 해시 체인 검사 → 끝 해시와 성적을 Discord에 게시
+             → 백업을 만들어 바로 복원 검사 → 백업 파일을 Discord에 첨부 (/report로 언제든 조회)
+10분마다     바깥 감시 서비스에 하트비트 (끊기면 그 서비스가 알림)
 ```
 
 공시 하나가 LangGraph 스레드 하나이고, 단계마다 체크포인트에 저장됩니다. 봇이 중간에 죽거나 Discord 전송이 실패하면 멈춘 단계부터 이어갑니다. 성적표 기록에는 공시마다 정해진 키가 있어서, 기록 직후 죽어 같은 단계가 다시 돌아도 기록은 한 번만 남습니다. 어떤 AI에도 닿지 않으면(집 PC 꺼짐, 예비 AI 한도 초과) 기록하지 않고 다음 실행 때 다시 시도합니다. AI가 답은 했지만 형식에 맞지 않으면 "실패한 판단"으로 기록합니다.
@@ -86,7 +88,7 @@ pytest
    - KIS 앱키·시크릿: [KIS Developers](https://apiportal.koreainvestment.com) (한국투자증권 계좌 필요, 없으면 채점만 꺼짐). 돈과 주식이 없는 계좌의 실전 키를 권장합니다. 모의투자 키로 받은 시세는 빠지거나 부정확할 수 있다고 한국투자가 안내합니다.
    - Discord 봇: [개발자 포털](https://discord.com/developers/applications) → 앱 생성 → **Bot**에서 토큰 발급 → **Installation**에서 Guild Install에 `bot`·`applications.commands` 범위와 `View Channels`·`Send Messages`·`Embed Links` 권한 지정 → 설치 링크로 내 서버에 추가
    - 채널 ID·내 사용자 ID: Discord 설정 → 고급 → 개발자 모드 켜기 → 채널/내 이름 우클릭 → ID 복사
-2. 실행
+2. 점검한 뒤 실행
 
 ```bash
 git clone https://github.com/Oilwoo/dartboard && cd dartboard
@@ -94,23 +96,15 @@ cp .env.example .env
 nano .env
 cp watchlist.example.yaml watchlist.yaml   # 실제 종목은 이 파일에만 적습니다(git이 무시함)
 nano watchlist.yaml
-docker compose up -d --build
+docker compose build
+docker compose run --rm bot python -m dartboard.check   # 외부 서비스마다 최소 호출로 확인, 비밀값은 출력 안 함
+docker compose up -d
 docker compose logs -f
 ```
 
-3. 백업: 성적표·체크포인트는 Docker 볼륨에 있습니다.
+3. 하트비트, 백업, 새 서버로 되살리기는 [docs/operations.md](docs/operations.md)에 있습니다.
 
-```bash
-docker compose cp bot:/app/data ./backup
-```
-
-vLLM (4090 PC):
-
-```bash
-cd deploy/vllm
-cp .env.example .env
-docker compose up -d
-```
+집 PC(4090)의 vLLM과 Tailscale 설정 순서는 [docs/home-pc.md](docs/home-pc.md)에 있습니다. vLLM은 기본으로 PC 자신(127.0.0.1)에서만 받고, Tailscale 주소를 지정해야 서버가 닿습니다.
 
 ## 원칙
 

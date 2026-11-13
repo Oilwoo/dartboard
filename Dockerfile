@@ -1,5 +1,6 @@
 # dartboard bot. Built and started by compose.yaml: docker compose up -d --build
-FROM python:3.13-slim
+# pinned: the same base on every rebuild; bump the version and digest on purpose (docker buildx imagetools inspect)
+FROM python:3.13.18-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
