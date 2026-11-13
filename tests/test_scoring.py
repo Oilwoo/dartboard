@@ -5,7 +5,14 @@ import pytest
 
 from dartboard.ledger import Judgment, Ledger
 from dartboard.prices import KST, Bar, KisError
-from dartboard.scoring import ScoreRun, entry_session, is_official, plan, score_due
+from dartboard.scoring import (
+    ScoreRun,
+    calendar_mismatches,
+    entry_session,
+    is_official,
+    plan,
+    score_due,
+)
 
 # January 2026: Monday the 5th to Friday the 16th, with Wednesday the 7th as a market holiday in some tests
 WEEKDAYS = [date(2026, 1, d) for d in (5, 6, 7, 8, 9, 12, 13, 14, 15, 16)]
@@ -191,3 +198,11 @@ def test_counts_of_waiting_forecasts():
 
 def test_last_session_entry_with_nothing_after_it_is_still_on_time():
     assert plan([MON], kst(MON, 8, 0), "20260105", 1).on_time
+
+
+def test_calendar_mismatches_find_a_missing_index_bar():
+    open_days = {d: d.weekday() < 5 for d in (date(2026, 1, 5) + timedelta(i) for i in range(7))}
+    assert calendar_mismatches(WEEKDAYS, open_days, MON, date(2026, 1, 11)) == []
+    without_thu = [d for d in WEEKDAYS if d != THU]
+    assert calendar_mismatches(without_thu, open_days, MON, date(2026, 1, 11)) == [THU]
+    assert calendar_mismatches(without_thu, open_days, MON, WED) == []  # outside the compared range

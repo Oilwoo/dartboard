@@ -19,6 +19,7 @@ DOMAINS = {"real": "https://openapi.koreainvestment.com:9443", "demo": "https://
 SLEEP_S = {"real": 0.4, "demo": 1.1}  # under KIS limits (2026-04-20 notice): 모의 1/s, a new real key 3/s for 3 days
 STOCK = ("/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice", "FHKST03010100")
 INDEX = ("/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice", "FHKUP03500100")
+HOLIDAY = ("/uapi/domestic-stock/v1/quotations/chk-holiday", "CTCA0903R")  # real server only; KIS asks for 1 call a day
 BENCHMARK = {"Y": "0001", "K": "1001"}  # OpenDART corp_cls -> KOSPI / KOSDAQ composite index
 WINDOW_DAYS = 60  # per request; stays under the 100-row cap, so no paging is needed
 
@@ -102,3 +103,19 @@ class Kis:
                     bars[day] = Bar(datetime.strptime(day, "%Y%m%d").date(), float(o), float(c))
             hi = lo - timedelta(days=1)
         return [bars[k] for k in sorted(bars)]
+
+    def daily_rows(self, code: str, start: date, end: date, adjusted: bool = True) -> list[dict]:
+        """Raw daily rows (at most 100) for checks that need more fields than open and close."""
+        params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": code, "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+                  "FID_INPUT_DATE_2": end.strftime("%Y%m%d"), "FID_PERIOD_DIV_CODE": "D",
+                  "FID_ORG_ADJ_PRC": "0" if adjusted else "1"}
+        return self._get(*STOCK, params).get("output2") or []
+
+    def open_days(self, base: date) -> dict[date, bool]:
+        """The KRX calendar from `base` as KIS has it: day -> market open (opnd_yn)."""
+        if self.env != "real":
+            raise KisError("the holiday API has no 모의투자 version")
+        res = self._get(*HOLIDAY, {"BASS_DT": base.strftime("%Y%m%d"), "CTX_AREA_NK": "", "CTX_AREA_FK": ""})
+        rows = res.get("output") or []
+        return {datetime.strptime(r["bass_dt"], "%Y%m%d").date(): r.get("opnd_yn") == "Y"
+                for r in (rows if isinstance(rows, list) else [rows]) if r.get("bass_dt")}

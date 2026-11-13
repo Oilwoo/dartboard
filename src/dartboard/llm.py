@@ -40,13 +40,14 @@ class Unavailable(RuntimeError):
     """No provider answered (connection, HTTP or rate-limit errors): try the same filing again later."""
 
 
-def configured(order: str) -> list[str]:
-    """Names in `order` (e.g. "local,groq") whose URL and model are both set."""
+def configured(order: str, env=None) -> list[str]:
+    """Names in `order` (e.g. "local,groq") whose URL and model are both set in env (default: os.environ)."""
+    env = os.environ if env is None else env
     names = [n.strip() for n in order.split(",") if n.strip()]
     unknown = [n for n in names if n not in PROVIDERS]
     if unknown:
         raise ValueError(f"unknown LLM provider(s): {unknown}; choose from {list(PROVIDERS)}")
-    return [n for n in names if os.getenv(PROVIDERS[n][0]) and os.getenv(PROVIDERS[n][2])]
+    return [n for n in names if env.get(PROVIDERS[n][0]) and env.get(PROVIDERS[n][2])]
 
 
 def build_agent(output_type: type[BaseModel], instructions: str, order: str | None = None) -> Agent | None:

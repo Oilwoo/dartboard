@@ -42,6 +42,12 @@ def first_session_after(sessions: list[date], day: date) -> date | None:
     return next((s for s in sessions if s > day), None)
 
 
+def calendar_mismatches(sessions: list[date], open_days: dict[date, bool], start: date, end: date) -> list[date]:
+    """Days in [start, end] where the index calendar and KIS's holiday calendar disagree. A missing index bar
+    would silently shift every exit after it, so the daily check reports these."""
+    return [d for d, is_open in sorted(open_days.items()) if start <= d <= end and is_open != (d in sessions)]
+
+
 @dataclass(frozen=True)
 class Plan:
     entry: date

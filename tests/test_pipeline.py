@@ -262,3 +262,48 @@ def test_universe_off_leaves_other_companies_untouched():
     p, log = make(filings=[filing("A1"), filing("U1", OTHER)], judge_universe=False)
     assert asyncio.run(p.run_once(DAY)) == ["A1"]
     assert p.seen.status("U1") is None and log["docs"] == ["A1"]
+
+
+def test_finished_filings_leave_no_checkpoints_but_open_questions_keep_theirs():
+    async def go():
+        never = asyncio.Event()
+
+        async def approve(q):
+            await never.wait()
+            return True
+
+        p, _ = make(answers={"A2": UNFAITHFUL}, filings=[filing("A1"), filing("A2")], approve=approve)
+        await p.run_once(DAY)
+        done = await p.app.aget_state(p._cfg("A1"))
+        waiting = await p.app.aget_state(p._cfg("A2"))
+        for task in list(p._tasks):
+            task.cancel()
+        await asyncio.gather(*p._tasks, return_exceptions=True)
+        return done, waiting
+
+    done, waiting = asyncio.run(go())
+    assert not done.values           # recorded in the ledger, so its checkpoints were dropped
+    assert waiting.interrupts        # still needs the saved state to resume after the human answers
+
+
+def test_only_the_part_the_model_reads_is_kept_and_the_prompt_says_so(monkeypatch):
+    prompts = []
+
+    async def fake_run(agent, prompt):
+        prompts.append(prompt)
+        return Answer(summary="요약", p_up=0.5), "local"
+
+    monkeypatch.setattr(llm, "run", fake_run)
+    seen_state = {}
+
+    async def notify(state):
+        seen_state.update(state)
+
+    p = Pipeline(dart_key="k", watchlist={WATCHED: "테스트전자"}, ledger=Ledger(), seen=SeenStore(),
+                 answer=pipeline.llm_answerer(None, None), notify=notify, approve=None,
+                 checkpointer=InMemorySaver(), max_chars=10,
+                 list_fn=lambda key, bgn, end, filing_type=None: [filing("A1")] if filing_type == "B001" else [],
+                 doc_fn=lambda key, rcept_no: "가나다라마바사아자차카타파하")
+    asyncio.run(p.run_once(DAY))
+    assert seen_state["source_text"] == "가나다라마바사아자차" and seen_state["truncated"]
+    assert "원문 (앞부분 10자만 사용):\n가나다라마바사아자차" in prompts[0] and "(005930, 코스피)" in prompts[0]

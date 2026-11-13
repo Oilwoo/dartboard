@@ -38,13 +38,13 @@ MARKET_NAMES = {"Y": "코스피", "K": "코스닥"}
 Approver = Callable[[dict], Awaitable[bool]]
 
 
-def llm_answerer(watchlist_agent, universe_agent, max_chars: int = 12000) -> Answerer:
+def llm_answerer(watchlist_agent, universe_agent) -> Answerer:
     async def answer(s: State):
         agent = watchlist_agent if s["route"] == "watchlist" else universe_agent
         body = s["source_text"]
-        note = f" (앞부분 {max_chars:,}자만 사용)" if len(body) > max_chars else ""
+        note = f" (앞부분 {len(body):,}자만 사용)" if s.get("truncated") else ""
         prompt = (f"회사: {s['corp_name']} ({s['ticker']}, {MARKET_NAMES[s['market']]})\n"
-                  f"공시: {s['report_nm']} (접수일 {s['rcept_dt']})\n\n원문{note}:\n{body[:max_chars]}")
+                  f"공시: {s['report_nm']} (접수일 {s['rcept_dt']})\n\n원문{note}:\n{body}")
         return await llm.run(agent, prompt)
 
     return answer
@@ -78,9 +78,9 @@ class SeenStore:
 class Pipeline:
     def __init__(self, *, dart_key: str, watchlist: dict[str, str], ledger: Ledger, seen: SeenStore,
                  answer: Answerer, notify: Notifier, approve: Approver, checkpointer, judge_universe: bool = True,
-                 list_fn=list_disclosures, doc_fn=fetch_document):
+                 max_chars: int = 12000, list_fn=list_disclosures, doc_fn=fetch_document):
         self.dart_key, self.watchlist, self.seen, self.approve = dart_key, watchlist, seen, approve
-        self.judge_universe, self.list_fn, self.doc_fn = judge_universe, list_fn, doc_fn
+        self.judge_universe, self.max_chars, self.list_fn, self.doc_fn = judge_universe, max_chars, list_fn, doc_fn
         self.app = build(answer, ledger, notify, checkpointer, PROMPT_VERSION)
         self._asking: set[str] = set()  # filings with a question open in Discord right now
         self._tasks: set[asyncio.Task] = set()
@@ -159,10 +159,19 @@ class Pipeline:
 
     async def _first_input(self, d: Disclosure, kind: str, route: str) -> State:
         text = await asyncio.to_thread(self.doc_fn, self.dart_key, d.rcept_no)
+        # only what the model reads is kept: checkpoints store the whole state at every step
         return {"rcept_no": d.rcept_no, "rcept_dt": d.rcept_dt, "corp_code": d.corp_code,
                 "corp_name": d.corp_name, "ticker": d.stock_code, "market": d.corp_cls,
                 "filing_type": d.filing_type, "report_nm": d.report_nm, "kind": kind, "route": route,
-                "source_text": text}
+                "source_text": text[:self.max_chars], "truncated": len(text) > self.max_chars}
+
+    async def _finish(self, rcept_no: str, status: str) -> None:
+        """Marks the filing done, then drops its checkpoints: the ledger keeps the record, so they are not needed."""
+        self.seen.mark(rcept_no, status)
+        try:
+            await self.app.checkpointer.adelete_thread(rcept_no)
+        except Exception:
+            log.exception("could not delete the checkpoints of %s; they only take disk space", rcept_no)
 
     async def _advance(self, rcept_no: str, first_input: Callable[[], Awaitable[State]] | None) -> None:
         """Moves one filing on from its last saved step, so finished steps never run twice."""
@@ -181,7 +190,7 @@ class Pipeline:
                 self.seen.mark(rcept_no, "lost")     # nothing saved to continue from
                 return
             if "__interrupt__" not in out:
-                self.seen.mark(rcept_no, out.get("decision", "auto"))
+                await self._finish(rcept_no, out.get("decision", "auto"))
                 return
             question = out["__interrupt__"][0].value
         self.seen.mark(rcept_no, "pending")
@@ -200,7 +209,7 @@ class Pipeline:
         try:
             approved = await self.approve(question)
             out = await self.app.ainvoke(Command(resume="keep" if approved else "discard"), self._cfg(rcept_no))
-            self.seen.mark(rcept_no, out.get("decision", "discard"))
+            await self._finish(rcept_no, out.get("decision", "discard"))
         except Exception:
             log.exception("review of %s failed; it stays pending and will be asked again", rcept_no)
         finally:

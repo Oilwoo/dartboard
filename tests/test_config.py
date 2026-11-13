@@ -51,3 +51,11 @@ def test_missing_settings_are_named():
 def test_missing_watchlist_says_how_to_create_it(tmp_path):
     with pytest.raises(SystemExit, match="cp watchlist.example.yaml"):
         load(ENV, watchlist_path=str(tmp_path / "watchlist.yaml"))
+
+
+def test_backup_channel_and_heartbeat_settings():
+    cfg = load(dict(ENV, BACKUP_CHANNEL_ID="789", HEALTHCHECK_URL="https://hc-ping.com/x"), watchlist_path=EXAMPLE)
+    assert (cfg.backup_channel_id, cfg.healthcheck_url) == (789, "https://hc-ping.com/x")
+    assert load(ENV, watchlist_path=EXAMPLE).backup_channel_id is None
+    with pytest.raises(SystemExit, match="BACKUP_CHANNEL_ID"):
+        load(dict(ENV, BACKUP_CHANNEL_ID="#backups"), watchlist_path=EXAMPLE)

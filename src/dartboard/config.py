@@ -25,6 +25,8 @@ class Settings:
     summary_max_chars: int = 12000
     llm_order: str = "local,groq,gemini"   # watchlist filings: any provider, in this order
     universe_llm_order: str = "local"      # the rest of the market: free-tier limits are too small for it
+    healthcheck_url: str = ""              # outside monitor that alerts when the pings stop
+    backup_channel_id: int | None = None   # where the daily backup file goes; the alert channel if unset
 
 
 def load_dotenv(path: str = ".env", env: dict | None = None) -> None:
@@ -57,6 +59,9 @@ def load(env: dict | None = None, watchlist_path: str = "watchlist.yaml") -> Set
     missing = [k for k in REQUIRED if not env.get(k)]
     if missing:
         raise SystemExit(f"missing settings in .env: {', '.join(missing)}")
+    backup_channel = env.get("BACKUP_CHANNEL_ID", "")
+    if backup_channel and not backup_channel.isdigit():
+        raise SystemExit("BACKUP_CHANNEL_ID must be a Discord channel ID (digits only)")
     if not os.path.isfile(watchlist_path):
         raise SystemExit(f"{watchlist_path} not found: cp watchlist.example.yaml {watchlist_path}, then list your stocks")
     return Settings(
@@ -74,4 +79,6 @@ def load(env: dict | None = None, watchlist_path: str = "watchlist.yaml") -> Set
         summary_max_chars=int(env.get("SUMMARY_MAX_CHARS", "12000")),
         llm_order=env.get("LLM_ORDER", "local,groq,gemini"),
         universe_llm_order=env.get("UNIVERSE_LLM_ORDER", "local"),
+        healthcheck_url=env.get("HEALTHCHECK_URL", ""),
+        backup_channel_id=int(backup_channel) if backup_channel else None,
     )

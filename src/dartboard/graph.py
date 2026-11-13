@@ -36,7 +36,8 @@ class State(TypedDict, total=False):
     report_nm: str
     kind: str             # new / follow_up
     route: str            # watchlist / universe
-    source_text: str
+    source_text: str      # the part of the filing the model reads
+    truncated: bool       # the filing was longer than that
     # the judgment
     answer: dict | None   # Answer as a dict: checkpoints store only JSON-safe values
     model: str

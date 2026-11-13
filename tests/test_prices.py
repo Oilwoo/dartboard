@@ -124,3 +124,33 @@ def test_demo_environment_uses_demo_domain_and_slower_pace(tmp_path):
 def test_pace_stays_under_kis_limits():
     # KIS notice (2026-04-20): 모의 allows 1 call/s, and a newly issued real key 3/s for its first 3 days
     assert SLEEP_S["demo"] > 1.0 and SLEEP_S["real"] >= 1 / 3
+
+
+class FakeHolidays(FakeKis):
+    def __call__(self, method, url, headers, body):
+        if "chk-holiday" in url:
+            self.calls.append((method, url, headers, body))
+            return {"rt_cd": "0", "output": [
+                {"bass_dt": "20260105", "opnd_yn": "Y", "bzdy_yn": "Y", "tr_day_yn": "Y", "sttl_day_yn": "Y"},
+                {"bass_dt": "20260110", "opnd_yn": "N", "bzdy_yn": "N", "tr_day_yn": "N", "sttl_day_yn": "N"}]}
+        return super().__call__(method, url, headers, body)
+
+
+def test_holiday_calendar_reads_market_open_days(tmp_path):
+    fake = FakeHolidays()
+    days = kis(fake, tmp_path).open_days(date(2026, 1, 5))
+    assert days == {date(2026, 1, 5): True, date(2026, 1, 10): False}
+    url, headers = fake.gets()[0]
+    assert "BASS_DT=20260105" in url and headers["tr_id"] == "CTCA0903R"
+
+
+def test_holiday_calendar_does_not_exist_for_paper_trading(tmp_path):
+    with pytest.raises(KisError):
+        kis(FakeHolidays(), tmp_path, env="demo").open_days(date(2026, 1, 5))
+
+
+def test_raw_daily_rows_can_ask_for_unadjusted_prices(tmp_path):
+    fake = FakeKis([stock_row("20260105", "100", "101")])
+    rows = kis(fake, tmp_path).daily_rows("005930", date(2026, 1, 1), date(2026, 1, 9), adjusted=False)
+    assert rows[0]["stck_clpr"] == "101"
+    assert "FID_ORG_ADJ_PRC=1" in fake.gets()[0][0] and "FID_COND_MRKT_DIV_CODE=J" in fake.gets()[0][0]
